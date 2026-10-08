@@ -152,6 +152,37 @@
 .bgdvzh .bgdvzh-badge-obstacle { background: #fef3f2; border-color: #b42318; color: #912018; }
 .bgdvzh .bgdvzh-badge-obstacle .bgdvzh-badge-icon { background: #b42318; }
 .bgdvzh .bgdvzh-reasons { margin: 0 0 1em; padding-left: 1.3em; }
+
+/* Разбор по разделам */
+.bgdvzh .bgdvzh-analysis { margin: 1.2em 0; }
+.bgdvzh .bgdvzh-facts { margin: 0 0 1em; padding: .6em 1em; border: 1px solid #d0d5dd; border-radius: 8px; background: #f9fafb; }
+.bgdvzh .bgdvzh-facts dt { font-weight: 600; margin-top: .5em; }
+.bgdvzh .bgdvzh-facts dt:first-child { margin-top: 0; }
+.bgdvzh .bgdvzh-facts dd { margin: 0; overflow-wrap: anywhere; }
+.bgdvzh .bgdvzh-cards { display: grid; grid-template-columns: 1fr; gap: .8em; margin: 0; padding: 0; list-style: none; }
+.bgdvzh .bgdvzh-card { padding: .8em 1em; border: 1px solid #d0d5dd; border-left-width: 6px; border-radius: 8px; background: #fff; overflow-wrap: anywhere; }
+.bgdvzh .bgdvzh-card-head { display: flex; flex-wrap: wrap; align-items: center; justify-content: space-between; gap: .4em .8em; margin-bottom: .4em; }
+.bgdvzh .bgdvzh-card-title { margin: 0; font-size: 1.05em; }
+.bgdvzh .bgdvzh-card-status { display: inline-flex; align-items: center; gap: .4em; font-weight: 700; font-size: .92em; }
+.bgdvzh .bgdvzh-card-icon { display: inline-flex; align-items: center; justify-content: center; width: 1.5em; height: 1.5em; border-radius: 50%; color: #fff; font-size: .9em; }
+.bgdvzh .bgdvzh-card-lines { margin: 0; padding-left: 1.3em; }
+.bgdvzh .bgdvzh-card-lines li { margin-bottom: .3em; }
+.bgdvzh .bgdvzh-card-ok { border-left-color: #05603a; }
+.bgdvzh .bgdvzh-card-ok .bgdvzh-card-status { color: #05603a; }
+.bgdvzh .bgdvzh-card-ok .bgdvzh-card-icon { background: #05603a; }
+.bgdvzh .bgdvzh-card-check { border-left-color: #8a4b00; }
+.bgdvzh .bgdvzh-card-check .bgdvzh-card-status { color: #6b3a00; }
+.bgdvzh .bgdvzh-card-check .bgdvzh-card-icon { background: #8a4b00; }
+.bgdvzh .bgdvzh-card-obstacle { border-left-color: #b42318; }
+.bgdvzh .bgdvzh-card-obstacle .bgdvzh-card-status { color: #912018; }
+.bgdvzh .bgdvzh-card-obstacle .bgdvzh-card-icon { background: #b42318; }
+.bgdvzh .bgdvzh-card-info { border-left-color: #475467; }
+.bgdvzh .bgdvzh-card-info .bgdvzh-card-status { color: #344054; }
+.bgdvzh .bgdvzh-card-info .bgdvzh-card-icon { background: #475467; }
+.bgdvzh .bgdvzh-admin-note { margin: 0 0 1em; padding: .6em 1em; border-left: 4px solid #1a56db; background: #f8faff; font-weight: 600; }
+@media (min-width: 700px) {
+	.bgdvzh .bgdvzh-cards { grid-template-columns: 1fr 1fr; }
+}
 .bgdvzh .bgdvzh-meta { color: #4b5563; font-size: .92em; margin-bottom: .3em; }
 .bgdvzh .bgdvzh-disclaimer { font-size: .9em; color: #4b5563; border-left: 4px solid #d0d5dd; padding-left: .8em; margin: 1em 0; }
 .bgdvzh .bgdvzh-offer, .bgdvzh .bgdvzh-pending, .bgdvzh .bgdvzh-paid {
@@ -237,6 +268,98 @@
 	word-break: normal;
 }
 .bgdvzh .bgdvzh-doc th { background: #f2f4f7; font-weight: 700; }
+
+/* Консультации: две карточки после результата */
+.bgdvzh .bgdvzh-offer-grid { display: grid; grid-template-columns: 1fr; gap: 1em; margin: 1.2em 0; }
+.bgdvzh .bgdvzh-offer-grid .bgdvzh-offer { margin: 0; min-width: 0; overflow-wrap: anywhere; display: flex; flex-direction: column; }
+.bgdvzh .bgdvzh-offer-card > .bgdvzh-actions, .bgdvzh .bgdvzh-offer-card > .bgdvzh-btn { margin-top: auto; padding-top: .6em; }
+@media (min-width: 700px) {
+	.bgdvzh .bgdvzh-offer-grid { grid-template-columns: 1fr 1fr; align-items: stretch; }
+	.bgdvzh .bgdvzh-offer-grid-single { grid-template-columns: 1fr; }
+}
+.bgdvzh .bgdvzh-tag {
+	display: inline-block;
+	margin: 0 0 .7em;
+	padding: .3em .8em;
+	font-size: .92em;
+	font-weight: 700;
+	color: #05603a;
+	background: #ecfdf3;
+	border: 2px solid #05603a;
+	border-radius: 999px;
+}
+.bgdvzh .bgdvzh-consultant { display: flex; align-items: center; gap: .8em; margin: 0 0 .9em; }
+.bgdvzh .bgdvzh-consultant-photo { width: 64px; height: 64px; border-radius: 50%; object-fit: cover; flex: 0 0 auto; }
+.bgdvzh .bgdvzh-consultant-text { min-width: 0; }
+.bgdvzh .bgdvzh-consultant-text p { margin: 0; }
+.bgdvzh .bgdvzh-consultant-name { font-weight: 700; }
+.bgdvzh .bgdvzh-priceblock { margin: 0 0 .9em; }
+.bgdvzh .bgdvzh-pricelist { display: grid; grid-template-columns: 1fr auto; gap: .2em 1em; margin: 0 0 .4em; }
+.bgdvzh .bgdvzh-pricelist dt, .bgdvzh .bgdvzh-pricelist dd { margin: 0; }
+.bgdvzh .bgdvzh-pricelist dd { text-align: right; }
+.bgdvzh .bgdvzh-price-total { font-weight: 700; font-size: 1.1em; border-top: 1px solid #d0d5dd; padding-top: .3em; margin-top: .2em; }
+
+/* Мастер записи */
+.bgdvzh .bgdvzh-flow { margin: 0 0 1.2em; padding: 1em; border: 2px solid #1a56db; border-radius: 8px; background: #fff; }
+.bgdvzh .bgdvzh-flow .bgdvzh-heading { font-size: 1.2em; }
+.bgdvzh .bgdvzh-fmtinfo { margin: 0 0 .8em; padding: .6em .9em; background: #f9fafb; border-left: 4px solid #d0d5dd; border-radius: 4px; }
+.bgdvzh .bgdvzh-fmtinfo p { margin: 0 0 .3em; }
+.bgdvzh .bgdvzh-picker { margin: 0 0 1em; }
+.bgdvzh .bgdvzh-days, .bgdvzh .bgdvzh-slots { display: flex; flex-wrap: wrap; gap: .5em; margin: 0 0 .9em; }
+.bgdvzh .bgdvzh-day, .bgdvzh .bgdvzh-slot {
+	min-height: 44px;
+	min-width: 44px;
+	padding: .4em .8em;
+	font: inherit;
+	line-height: 1.25;
+	color: #1a56db;
+	background: #fff;
+	border: 2px solid #1a56db;
+	border-radius: 6px;
+	cursor: pointer;
+}
+.bgdvzh .bgdvzh-day:hover, .bgdvzh .bgdvzh-slot:hover { background: #eff4ff; }
+.bgdvzh .bgdvzh-day.is-active, .bgdvzh .bgdvzh-slot.is-active { color: #fff; background: #1a56db; font-weight: 700; }
+.bgdvzh .bgdvzh-slots { display: grid; grid-template-columns: repeat(auto-fill, minmax(130px, 1fr)); }
+.bgdvzh .bgdvzh-slots-wide { grid-template-columns: 1fr; }
+.bgdvzh .bgdvzh-slot { display: flex; flex-direction: column; align-items: center; justify-content: center; text-align: center; overflow-wrap: anywhere; }
+.bgdvzh .bgdvzh-slots-wide .bgdvzh-slot { align-items: flex-start; text-align: left; }
+.bgdvzh .bgdvzh-slot-main { font-weight: 700; }
+.bgdvzh .bgdvzh-slot-bg { font-size: .82em; opacity: .9; }
+.bgdvzh .bgdvzh-empty { font-weight: 700; }
+.bgdvzh .bgdvzh-picked { font-weight: 600; min-height: 1.4em; }
+.bgdvzh .bgdvzh-counter { text-align: right; margin: .2em 0 0; }
+textarea.bgdvzh-input { resize: vertical; min-height: 7em; }
+
+/* Экран записи */
+.bgdvzh .bgdvzh-status {
+	display: flex;
+	align-items: center;
+	gap: .4em;
+	margin: 0 0 1em;
+	padding: .7em 1em;
+	font-weight: 700;
+	border: 2px solid;
+	border-radius: 6px;
+}
+.bgdvzh .bgdvzh-status-ok { color: #05603a; background: #ecfdf3; border-color: #05603a; }
+.bgdvzh .bgdvzh-status-check { color: #6b3a00; background: #fffaeb; border-color: #8a4b00; }
+.bgdvzh .bgdvzh-status-info { color: #344054; background: #f2f4f7; border-color: #475467; }
+.bgdvzh .bgdvzh-booking-dl { margin: 0 0 1em; padding: .6em 1em; border: 1px solid #d0d5dd; border-radius: 8px; }
+.bgdvzh .bgdvzh-booking-dl dd { white-space: pre-line; }
+.bgdvzh .bgdvzh-resched { margin: 1.2em 0; padding: 1em; border: 1px solid #d0d5dd; border-radius: 8px; }
+.bgdvzh .bgdvzh-resched .bgdvzh-subheading { margin-top: 0; }
+.bgdvzh .bgdvzh-consults { margin: 1.2em 0; }
+.bgdvzh .bgdvzh-snap-consult { margin-left: 1.2em; border-left: 4px solid #1a56db; }
+.bgdvzh .bgdvzh-holdinfo { font-weight: 600; }
+.bgdvzh .bgdvzh-consult-host { min-width: 0; }
+
+@media (max-width: 480px) {
+	.bgdvzh .bgdvzh-slots { grid-template-columns: repeat(2, minmax(0, 1fr)); }
+	.bgdvzh .bgdvzh-flow, .bgdvzh .bgdvzh-offer { padding: .8em; }
+	.bgdvzh .bgdvzh-snap-consult { margin-left: .5em; }
+	.bgdvzh .bgdvzh-nav .bgdvzh-btn { flex: 1 1 100%; }
+}
 
 @media (min-width: 600px) {
 	.bgdvzh .bgdvzh-nav .bgdvzh-btn { flex: 0 0 auto; }

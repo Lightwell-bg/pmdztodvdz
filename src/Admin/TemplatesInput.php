@@ -44,6 +44,14 @@ final class TemplatesInput {
 			}
 		}
 
+		// Тексты карточек выбора: только известные ключи, простой текст.
+		foreach ( array_keys( (array) ( $defaults['offers'] ?? array() ) ) as $key ) {
+			// Пустое поле оставляет прежний текст: карточка не должна остаться без текста.
+			if ( isset( $post['offers'][ $key ] ) && '' !== self::clean( $post['offers'][ $key ] ) ) {
+				$out['offers'][ $key ] = self::clean( $post['offers'][ $key ] );
+			}
+		}
+
 		if ( isset( $post['offer_items'] ) ) {
 			$out['offer']['items'] = self::lines( $post['offer_items'] );
 		}

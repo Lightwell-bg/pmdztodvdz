@@ -15,6 +15,12 @@ declare(strict_types=1);
 namespace Bginfo\PmzhDvzh\Commerce;
 
 use Bginfo\PmzhDvzh\Access\AccessPolicy;
+use Bginfo\PmzhDvzh\Booking\BookingSync;
+use Bginfo\PmzhDvzh\Booking\CreditRefundHandler;
+use Bginfo\PmzhDvzh\Storage\BookingRepository;
+use Bginfo\PmzhDvzh\Storage\CreditRepository;
+use Bginfo\PmzhDvzh\Storage\Schema;
+use Bginfo\PmzhDvzh\Support\Clock;
 use Bginfo\PmzhDvzh\Storage\DocumentRepository;
 use Bginfo\PmzhDvzh\Storage\EventRepository;
 use Bginfo\PmzhDvzh\Storage\PurchaseRepository;
@@ -25,6 +31,11 @@ final class OrderEvents {
 
 	/** @var array<int,bool> Защита от повторного входа по одному заказу. */
 	private array $busy = array();
+
+	private ?BookingSync $bookingSync = null;
+	private ?BookingRepository $bookings = null;
+	private ?CreditRepository $credits = null;
+	private ?CreditRefundHandler $creditRefund = null;
 
 	public function __construct(
 		private OrderReader $reader,
@@ -123,7 +134,84 @@ final class OrderEvents {
 			$this->queueDocument( (int) $purchase['id'] );
 		}
 
+		$this->syncConsultation( $purchase, $st );
+
 		return $st;
+	}
+
+	/**
+	 * Подключает сервисы консультаций (после создания BookingSync).
+	 */
+	public function withBooking( BookingSync $sync, BookingRepository $bookings, CreditRepository $credits, ?CreditRefundHandler $creditRefund = null ): void {
+		$this->bookingSync  = $sync;
+		$this->bookings     = $bookings;
+		$this->credits      = $credits;
+		$this->creditRefund = $creditRefund;
+	}
+
+	/**
+	 * Консультация: приводит запись в соответствие с заказом (оплата, возврат,
+	 * спор). Инструкция: полный возврат делает свободный зачёт недоступным.
+	 *
+	 * @param array<string,mixed>                   $purchase
+	 * @param array{state:string,access:bool} $st
+	 */
+	private function syncConsultation( array $purchase, array $st ): void {
+		if ( null === $this->bookingSync || null === $this->bookings || null === $this->credits || ! Schema::ready() ) {
+			return;
+		}
+
+		$now = Clock::timestamp();
+
+		if ( 'consultation' !== (string) ( $purchase['kind'] ?? 'instruction' ) ) {
+			if ( in_array( $st['state'], array( AccessPolicy::REFUNDED, AccessPolicy::REVOKED ), true ) ) {
+				if ( null !== $this->creditRefund ) {
+					$this->creditRefund->handle( (int) $purchase['id'], (int) $purchase['order_id'], $now );
+				} else {
+					$this->credits->voidIfFree( (int) $purchase['id'], gmdate( 'Y-m-d H:i:s', $now ) );
+				}
+			}
+
+			return;
+		}
+
+		$booking = (int) ( $purchase['booking_id'] ?? 0 ) > 0 ? $this->bookings->get( (int) $purchase['booking_id'] ) : null;
+
+		if ( null === $booking ) {
+			return;
+		}
+
+		// Запись привязана к другому заказу (повторная попытка оплаты): неоплаченный
+		// второй заказ её не меняет; оплаченный забирает запись, если первый не оплачен.
+		if ( (int) $booking['purchase_id'] > 0 && (int) $booking['purchase_id'] !== (int) $purchase['id'] ) {
+			if ( AccessPolicy::PAID !== $st['state'] ) {
+				return;
+			}
+
+			$old = $this->purchases->byId( (int) $booking['purchase_id'] );
+
+			if ( null !== $old && $this->policy->paymentState( $old )['access'] ) {
+				$this->events->log( 'consult_duplicate_payment', (int) $purchase['id'], (int) $purchase['order_id'], 'booking ' . (int) $booking['id'] );
+
+				return;
+			}
+
+			$this->bookings->update(
+				(int) $booking['id'],
+				array(
+					'order_id'      => (int) $purchase['order_id'],
+					'order_item_id' => (int) $purchase['order_item_id'],
+					'purchase_id'   => (int) $purchase['id'],
+				)
+			);
+			$booking = $this->bookings->get( (int) $booking['id'] );
+
+			if ( null === $booking ) {
+				return;
+			}
+		}
+
+		$this->bookingSync->sync( $booking, $now );
 	}
 
 	/** Строка документа pending и запасная отложенная задача. */

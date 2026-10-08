@@ -81,7 +81,7 @@ final class Frontend {
 		}
 		?>
 <script>
-(function(){try{var h=location.hash||'';if(h.indexOf('#dvzh-k=')===0){var t=h.slice(8);if(/^[0-9a-fA-F]{64}$/.test(t)){try{sessionStorage.setItem('bgdvzh_k',t);}catch(e){}history.replaceState(null,'',location.pathname+location.search+'#anketa-dvzh');}}}catch(e){}})();
+(function(){try{var h=location.hash||'';if(h.indexOf('#dvzh-k=')===0){var t=h.slice(8);if(/^[0-9a-fA-F]{64}$/.test(t)){try{sessionStorage.setItem('bgdvzh_k',t);}catch(e){}history.replaceState(null,'',location.pathname+location.search+'#anketa-dvzh');}}else if(h.indexOf('#dvzh-b=')===0){var b=h.slice(8);if(/^[0-9a-fA-F]{64}$/.test(b)){try{sessionStorage.setItem('bgdvzh_b',b);}catch(e){}history.replaceState(null,'',location.pathname+location.search+'#anketa-dvzh');}}}catch(e){}})();
 </script>
 		<?php
 	}

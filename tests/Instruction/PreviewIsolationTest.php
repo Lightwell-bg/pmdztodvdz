@@ -34,9 +34,24 @@ final class PreviewIsolationTest extends TestCase {
 		return array(
 			$norm['answers'],
 			$result,
-			$composer->preview( $result ),
+			$composer->preview( $result, $norm['answers'] ),
 			$composer->instruction( $norm['answers'], $result, 'default-1' ),
 		);
+	}
+
+	/** @return list<string> */
+	private function leafStrings( mixed $node ): array {
+		if ( is_string( $node ) ) {
+			return array( $node );
+		}
+
+		$out = array();
+
+		foreach ( is_array( $node ) ? $node : array() as $v ) {
+			$out = array_merge( $out, $this->leafStrings( $v ) );
+		}
+
+		return $out;
 	}
 
 	public function test_preview_has_no_instruction_content(): void {
@@ -51,7 +66,21 @@ final class PreviewIsolationTest extends TestCase {
 			$this->assertStringNotContainsString( $section['title'], $json, 'заголовок раздела платной инструкции в предпросмотре' );
 		}
 
+		$this->assertArrayHasKey( 'analysis', $preview );
+		$this->assertCount( 6, $preview['analysis']['sections'] );
+
 		$this->assertStringNotContainsString( '4. Персональный перечень документов', $json );
+
+		// Бесплатный разбор (без рекламного описания offer) не содержит разделов платной инструкции.
+		$free = $preview;
+		unset( $free['offer'] );
+		$freeJson = Json::encode( $free );
+
+		foreach ( array( 'Персональный перечень документов', 'Последовательность действий', 'Вопросы для подразделения', 'Что сделать:' ) as $needle ) {
+			$this->assertStringNotContainsString( $needle, $freeJson );
+		}
+
+		$this->assertStringNotContainsString( '{', implode( ' ', $this->leafStrings( $free ) ), 'неподставленный плейсхолдер' );
 		$this->assertStringNotContainsString( $answers['applicant']['citizenship'], $json, 'ответы не должны попадать в предпросмотр' );
 		$this->assertStringNotContainsString( 'Проверяемый пятилетний период', $json );
 	}

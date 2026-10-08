@@ -22,7 +22,7 @@ namespace Bginfo\PmzhDvzh\Storage;
 
 final class Schema {
 
-	public const DB_VERSION = '2';
+	public const DB_VERSION = '3';
 	public const OPTION     = 'bgdvzh_db_version';
 
 	/** @return array<string,string> короткое имя => полное имя таблицы */
@@ -40,6 +40,13 @@ final class Schema {
 			'documents' => $p . 'documents',
 			'templates' => $p . 'templates',
 			'events'    => $p . 'events',
+			// Консультации (DB_VERSION 3).
+			'units'         => $p . 'units',
+			'seats'         => $p . 'seats',
+			'bookings'      => $p . 'bookings',
+			'credits'       => $p . 'credits',
+			'notifications' => $p . 'notifications',
+			'messages'      => $p . 'messages',
 		);
 	}
 
@@ -122,6 +129,8 @@ final class Schema {
 				item_total decimal(18,9) NOT NULL DEFAULT 0,
 				refunded_total decimal(18,9) NOT NULL DEFAULT 0,
 				receipt_link_sent tinyint(1) NOT NULL DEFAULT 0,
+				kind varchar(16) NOT NULL DEFAULT 'instruction',
+				booking_id bigint(20) unsigned NOT NULL DEFAULT 0,
 				created_at datetime NOT NULL,
 				updated_at datetime NOT NULL,
 				paid_at datetime NULL,
@@ -129,6 +138,7 @@ final class Schema {
 				UNIQUE KEY order_item_id (order_item_id),
 				UNIQUE KEY order_snapshot (order_id,snapshot_id),
 				KEY snapshot_id (snapshot_id),
+				KEY booking_id (booking_id),
 				KEY order_id (order_id),
 				KEY user_id (user_id),
 				KEY state (state)
@@ -191,6 +201,119 @@ final class Schema {
 				KEY purchase_id (purchase_id),
 				KEY order_id (order_id)
 			) $c;",
+			// Занятые 5-минутные единицы времени консультаций.
+			"CREATE TABLE {$t['units']} (
+				unit_utc bigint(20) NOT NULL,
+				booking_id bigint(20) unsigned NOT NULL,
+				expires_at bigint(20) NULL,
+				PRIMARY KEY  (unit_utc),
+				KEY booking_id (booking_id),
+				KEY expires_at (expires_at)
+			) $c;",
+			// Места письменных разборов по датам.
+			"CREATE TABLE {$t['seats']} (
+				local_date date NOT NULL,
+				seat_no smallint(5) unsigned NOT NULL,
+				booking_id bigint(20) unsigned NOT NULL,
+				expires_at bigint(20) NULL,
+				PRIMARY KEY  (local_date,seat_no),
+				KEY booking_id (booking_id)
+			) $c;",
+			// Записи на консультацию.
+			"CREATE TABLE {$t['bookings']} (
+				id bigint(20) unsigned NOT NULL AUTO_INCREMENT,
+				public_id char(32) NOT NULL,
+				snapshot_id bigint(20) unsigned NOT NULL,
+				session_id bigint(20) unsigned NOT NULL DEFAULT 0,
+				user_id bigint(20) unsigned NOT NULL DEFAULT 0,
+				format varchar(16) NOT NULL,
+				mode varchar(16) NOT NULL DEFAULT '',
+				kind varchar(8) NOT NULL,
+				status varchar(20) NOT NULL,
+				status_reason varchar(32) NOT NULL DEFAULT '',
+				pre_dispute_status varchar(20) NOT NULL DEFAULT '',
+				lock_token char(32) NOT NULL DEFAULT '',
+				lock_until bigint(20) NULL,
+				start_utc bigint(20) NULL,
+				end_utc bigint(20) NULL,
+				block_end_utc bigint(20) NULL,
+				written_date date NULL,
+				deadline_utc bigint(20) NULL,
+				hold_until bigint(20) NOT NULL DEFAULT 0,
+				contact varchar(190) NOT NULL DEFAULT '',
+				email varchar(190) NOT NULL DEFAULT '',
+				question text NULL,
+				visitor_tz varchar(64) NOT NULL DEFAULT '',
+				terms longtext NULL,
+				meet_url varchar(255) NOT NULL DEFAULT '',
+				order_id bigint(20) unsigned NOT NULL DEFAULT 0,
+				order_item_id bigint(20) unsigned NOT NULL DEFAULT 0,
+				purchase_id bigint(20) unsigned NOT NULL DEFAULT 0,
+				credit_purchase_id bigint(20) unsigned NOT NULL DEFAULT 0,
+				credit_amount decimal(18,9) NOT NULL DEFAULT 0,
+				credit_conflict tinyint(1) NOT NULL DEFAULT 0,
+				ics_uid varchar(64) NOT NULL DEFAULT '',
+				ics_sequence int(10) unsigned NOT NULL DEFAULT 0,
+				reschedule_count int(10) unsigned NOT NULL DEFAULT 0,
+				followups_used int(10) unsigned NOT NULL DEFAULT 0,
+				reminder_sent_at datetime NULL,
+				paid_at datetime NULL,
+				admin_notes longtext NULL,
+				created_at datetime NOT NULL,
+				updated_at datetime NOT NULL,
+				PRIMARY KEY  (id),
+				UNIQUE KEY public_id (public_id),
+				KEY status (status),
+				KEY start_utc (start_utc),
+				KEY snapshot_id (snapshot_id),
+				KEY session_id (session_id),
+				KEY order_id (order_id)
+			) $c;",
+			// Зачёт инструкции в консультацию: одна строка на покупку инструкции.
+			"CREATE TABLE {$t['credits']} (
+				id bigint(20) unsigned NOT NULL AUTO_INCREMENT,
+				instruction_purchase_id bigint(20) unsigned NOT NULL,
+				booking_id bigint(20) unsigned NOT NULL DEFAULT 0,
+				amount decimal(18,9) NOT NULL DEFAULT 0,
+				currency varchar(8) NOT NULL DEFAULT '',
+				tax_mode varchar(8) NOT NULL DEFAULT 'incl',
+				state varchar(10) NOT NULL,
+				hold_until bigint(20) NOT NULL DEFAULT 0,
+				updated_at datetime NOT NULL,
+				PRIMARY KEY  (id),
+				UNIQUE KEY instruction_purchase_id (instruction_purchase_id),
+				KEY booking_id (booking_id),
+				KEY state (state)
+			) $c;",
+			// Журнал писем: UNIQUE (booking_id, type, seq) исключает повторную отправку.
+			"CREATE TABLE {$t['notifications']} (
+				id bigint(20) unsigned NOT NULL AUTO_INCREMENT,
+				booking_id bigint(20) unsigned NOT NULL,
+				type varchar(40) NOT NULL,
+				seq int(10) unsigned NOT NULL DEFAULT 0,
+				recipient varchar(190) NOT NULL DEFAULT '',
+				status varchar(10) NOT NULL DEFAULT 'queued',
+				attempts smallint(5) unsigned NOT NULL DEFAULT 0,
+				last_error varchar(255) NOT NULL DEFAULT '',
+				created_at datetime NOT NULL,
+				sent_at datetime NULL,
+				PRIMARY KEY  (id),
+				UNIQUE KEY once (booking_id,type,seq),
+				KEY status (status)
+			) $c;",
+			// История письменных ответов и заметок.
+			"CREATE TABLE {$t['messages']} (
+				id bigint(20) unsigned NOT NULL AUTO_INCREMENT,
+				booking_id bigint(20) unsigned NOT NULL,
+				direction varchar(8) NOT NULL,
+				subject varchar(255) NOT NULL DEFAULT '',
+				body longtext NULL,
+				author_id bigint(20) unsigned NOT NULL DEFAULT 0,
+				created_at datetime NOT NULL,
+				mail_status varchar(10) NOT NULL DEFAULT '',
+				PRIMARY KEY  (id),
+				KEY booking_id (booking_id)
+			) $c;",
 		);
 	}
 
@@ -244,6 +367,11 @@ final class Schema {
 		}
 
 		return $removed;
+	}
+
+	/** Схема актуальна (таблицы консультаций созданы). */
+	public static function ready(): bool {
+		return function_exists( 'get_option' ) && (string) get_option( self::OPTION, '' ) === self::DB_VERSION;
 	}
 
 	public static function maybeUpgrade(): void {

@@ -14,6 +14,8 @@
 	var GENERIC_ERROR = 'Не удалось выполнить запрос. Проверьте подключение и попробуйте ещё раз.';
 	var TOKEN_KEY = 'bgdvzh_k';
 	var CHECKOUT_KEY = 'bgdvzh_co';
+	var BOOKING_CO_KEY = 'bgdvzh_cb';   // id записи, ушедшей на оплату
+	var BOOKING_TOKEN_KEY = 'bgdvzh_b'; // токен ссылки управления записью (см. ранний скрипт в Frontend)
 	var STEPS = 7;
 	var SUMMARY = 8;
 	var DATE_MIN = '1950-01-01';
@@ -104,6 +106,12 @@
 		obstacle: 'Предварительно: есть препятствия'
 	};
 	var STATUS_ICON = { ok: '✓', check: '!', obstacle: '✕' };
+	var SECTION_STATUS = {
+		ok: ['Подтверждается', '✓'],
+		check: ['Нужно проверить', '!'],
+		obstacle: ['Препятствие', '✕'],
+		info: ['Сведения', 'i']
+	};
 
 	/* ---------- Состояние ---------- */
 	var state = {};          // последний ответ /state
@@ -117,7 +125,13 @@
 	var saving = false;
 	var dirty = false;
 	var pollTimer = null;
+	var holdTimer = null;    // информационный отсчёт резерва времени
 	var lastResult = null;
+	var trackPaid = '';      // id снимка, для которого после возврата с оплаты ждём «покупка подтверждена»
+	var trackBooking = '';   // то же для записи на консультацию
+	var shownTracked = {};   // result_shown уже отправлен
+	var bookingCsrf = {};    // id записи -> {checkout}
+	var uid = 0;
 	var savedTimer = null;
 
 	var live = el('div', { class: 'bgdvzh-live', 'aria-live': 'polite' });
@@ -308,7 +322,9 @@
 		opts = opts || {};
 		var headers = { 'Content-Type': 'application/json' };
 		if (cfg.nonce) { headers['X-WP-Nonce'] = cfg.nonce; }
-		if (opts.action) {
+		if (opts.csrf) {
+			headers['X-Bgdvzh-Csrf'] = opts.csrf;
+		} else if (opts.action) {
 			var tok = csrfFor(opts.action, opts.id || '');
 			if (tok) { headers['X-Bgdvzh-Csrf'] = tok; }
 		}
@@ -1120,7 +1136,10 @@
 	}
 
 	/* ---------- Результат ---------- */
-	function stopPoll() { if (pollTimer) { clearInterval(pollTimer); pollTimer = null; } }
+	function stopPoll() {
+		if (pollTimer) { clearInterval(pollTimer); pollTimer = null; }
+		if (holdTimer) { clearInterval(holdTimer); holdTimer = null; }
+	}
 	function openResult(id, quiet) {
 		stopPoll();
 		return api('GET', 'result?id=' + encodeURIComponent(id)).then(function (res) {
@@ -1139,6 +1158,33 @@
 			el('span', { class: 'bgdvzh-badge-icon', 'aria-hidden': 'true', text: STATUS_ICON[s] }),
 			el('span', { text: STATUS_BADGE[s] }));
 	}
+	/** Бесплатный разбор по разделам; в старых снимках его нет (null). */
+	function analysisBlock(a) {
+		if (!a || !Array.isArray(a.sections) || !a.sections.length) { return null; }
+		var box = el('section', { class: 'bgdvzh-analysis' }, el('h4', { class: 'bgdvzh-subheading', text: 'Разбор по разделам' }));
+		if (Array.isArray(a.facts) && a.facts.length) {
+			var dl = el('dl', { class: 'bgdvzh-facts' });
+			a.facts.forEach(function (f) {
+				dl.appendChild(el('dt', { text: String(f.label || '') }));
+				dl.appendChild(el('dd', { text: String(f.value || '') }));
+			});
+			box.appendChild(dl);
+		}
+		var ul = el('ul', { class: 'bgdvzh-cards' });
+		a.sections.forEach(function (s) {
+			var st = SECTION_STATUS[s.status] ? s.status : 'info';
+			var lines = Array.isArray(s.lines) ? s.lines : [];
+			ul.appendChild(el('li', { class: 'bgdvzh-card bgdvzh-card-' + st },
+				el('div', { class: 'bgdvzh-card-head' },
+					el('h5', { class: 'bgdvzh-card-title', text: String(s.title || '') }),
+					el('span', { class: 'bgdvzh-card-status' },
+						el('span', { class: 'bgdvzh-card-icon', 'aria-hidden': 'true', text: SECTION_STATUS[st][1] }),
+						el('span', { text: SECTION_STATUS[st][0] }))),
+				lines.length ? el('ul', { class: 'bgdvzh-card-lines' }, lines.map(function (x) { return el('li', { text: String(x) }); })) : null));
+		});
+		box.appendChild(ul);
+		return box;
+	}
 	function showResult(res) {
 		stopPoll();
 		lastResult = res;
@@ -1153,7 +1199,9 @@
 		wrap.appendChild(badge(p.status));
 		if (p.title) { wrap.appendChild(el('h4', { class: 'bgdvzh-subheading', text: p.title })); }
 		if (p.intro) { wrap.appendChild(el('p', { text: p.intro })); }
-		if (p.reasons && p.reasons.length) {
+		var analysis = analysisBlock(p.analysis);
+		if (analysis) { wrap.appendChild(analysis); }
+		else if (p.reasons && p.reasons.length) {
 			wrap.appendChild(el('ul', { class: 'bgdvzh-reasons' }, p.reasons.map(function (r) { return el('li', { text: r }); })));
 		}
 		if (p.filing_is_default && p.calc_date) {
@@ -1163,7 +1211,14 @@
 		}
 		if (p.disclaimer) { wrap.appendChild(el('p', { class: 'bgdvzh-disclaimer', text: p.disclaimer })); }
 
-		if (pay === 'paid') { wrap.appendChild(paidBlock(res, id)); }
+		var consults = consultationsBlock(res.consultations || snapshotConsultations(id));
+		if (consults) { wrap.appendChild(consults); }
+
+		if (pay === 'paid' || pay === 'admin') {
+			if (pay === 'paid' && trackPaid === id) { trackPaid = ''; track('bgdvzh_purchase_confirmed', 'instruction'); }
+			wrap.appendChild(paidBlock(res, id, pay === 'admin'));
+			if (pay === 'paid') { wrap.appendChild(offersBlock(id, p, null, true)); }
+		}
 		else if (pay === 'pending') { wrap.appendChild(pendingBlock(id)); }
 		else if (pay === 'unavailable') {
 			wrap.appendChild(el('div', { class: 'bgdvzh-notice', role: 'status' }, el('p', { text: 'Инструкция временно недоступна. Попробуйте позже.' })));
@@ -1171,7 +1226,8 @@
 		else if (pay === 'refunded' || pay === 'revoked' || pay === 'disputed') {
 			wrap.appendChild(el('div', { class: 'bgdvzh-notice' }, el('p', { text: 'Доступ к инструкции закрыт: оплата возвращена или оспорена.' })));
 		} else {
-			wrap.appendChild(offerBlock(p.offer || {}, id));
+			if (!shownTracked[id]) { shownTracked[id] = true; track('bgdvzh_result_shown'); }
+			wrap.appendChild(offersBlock(id, p, p.offer || {}, false));
 		}
 
 		wrap.appendChild(el('div', { class: 'bgdvzh-nav' },
@@ -1185,9 +1241,11 @@
 	}
 
 	function offerBlock(o, id) {
-		var box = el('section', { class: 'bgdvzh-offer' });
-		if (o.title) { box.appendChild(el('h4', { class: 'bgdvzh-subheading', text: o.title })); }
-		if (o.lead) { box.appendChild(el('p', { text: o.lead })); }
+		var box = el('section', { class: 'bgdvzh-offer bgdvzh-offer-card' });
+		var ttl = offerText('instruction_title', o.title);
+		var lead = offerText('instruction_text', o.lead);
+		box.appendChild(el('h4', { class: 'bgdvzh-subheading', text: ttl }));
+		if (lead) { box.appendChild(el('p', { text: lead })); }
 		if (o.items && o.items.length) { box.appendChild(el('ul', null, o.items.map(function (x) { return el('li', { text: x }); }))); }
 		if (state.price_html) {
 			var price = el('p', { class: 'bgdvzh-price' }, 'Стоимость: ');
@@ -1201,14 +1259,16 @@
 		}
 		var msg = el('p', { class: 'bgdvzh-error', hidden: true, role: 'alert' });
 		var btn = el('button', {
-			type: 'button', class: 'bgdvzh-btn', text: 'Перейти к оплате',
+			type: 'button', class: 'bgdvzh-btn', text: offerText('instruction_button'),
 			onclick: function () {
 				btn.disabled = true;
 				msg.hidden = true;
+				track('bgdvzh_option_selected', 'instruction');
 				api('POST', 'checkout', { id: id }, { action: 'checkout', id: id }).then(function (res) {
 					if (res.ok && typeof res.data.redirect === 'string' && /^https?:\/\//i.test(res.data.redirect)) {
 						// После возврата с оплаты сразу открыть этот результат (оплачен или ожидает подтверждения).
 						try { window.sessionStorage.setItem(CHECKOUT_KEY, id); } catch (e) { /* без хранилища */ }
+						track('bgdvzh_checkout_opened', 'instruction');
 						window.location.assign(res.data.redirect);
 						return;
 					}
@@ -1257,8 +1317,11 @@
 		return box;
 	}
 
-	function paidBlock(res, id) {
+	function paidBlock(res, id, isAdmin) {
 		var box = el('section', { class: 'bgdvzh-paid' });
+		if (isAdmin) {
+			box.appendChild(el('p', { class: 'bgdvzh-admin-note', role: 'status', text: 'Доступ администратора: инструкция открыта без оплаты' }));
+		}
 		var docBox = el('div', { class: 'bgdvzh-docstate', 'aria-live': 'polite' });
 		var instr = el('div', { class: 'bgdvzh-doc bgdvzh-doc-wrap' });
 		// instruction_html экранируется на сервере (HtmlRenderer), вставляется как разметка.
@@ -1287,7 +1350,7 @@
 		// Отправка ссылки доступна только владельцу по сеансу/аккаунту (снимок есть в /state);
 		// кто открыл инструкцию по ссылке из письма, эту ссылку уже получил.
 		var owns = (state.snapshots || []).some(function (s) { return snapId(s) === id; });
-		if (owns) {
+		if (owns && !isAdmin) {
 			box.appendChild(el('div', { class: 'bgdvzh-actions' }, linkBtn));
 			box.appendChild(linkMsg);
 		}
@@ -1356,6 +1419,895 @@
 		return box;
 	}
 
+	/* ====================================================================
+	 * Консультации: карточки предложений, выбор способа и времени, экран записи.
+	 * Все тексты с сервера и из полей ввода попадают в DOM только через textContent.
+	 * ==================================================================== */
+	var BG_TZ = 'Europe/Sofia';
+	var FORMAT_LABELS = { telegram: 'Telegram', whatsapp: 'WhatsApp', email: 'Email', phone: 'Звонок по телефону', meet: 'Google Meet' };
+	var MODE_LABELS = { text: 'Переписка', call: 'Звонок', written: 'Письменный ответ' };
+	var OFFER_DEFAULTS = {
+		instruction_title: 'Инструкция',
+		instruction_text: 'Персональная пошаговая инструкция по вашей анкете: что проверить, какие документы подготовить и в каком порядке действовать.',
+		instruction_button: 'Получить мою инструкцию',
+		consult_title: 'Консультация',
+		consult_text: 'Разберём вашу ситуацию лично: ответим на вопросы по анкете и предложим план действий.',
+		consult_button: 'Выбрать способ и время',
+		upsell_after_instruction: 'Остались вопросы по вашей ситуации? Закажите консультацию: стоимость инструкции будет зачтена.',
+		consult_obstacle_note: 'Обсудим причины и план подготовки. Консультация не гарантирует готовность к подаче или положительное решение',
+		recommended_label: 'Рекомендуем при вашей ситуации'
+	};
+	var BOOKING_STATUS = {
+		held: 'Ожидаем подтверждения оплаты', pending: 'Ожидаем подтверждения оплаты', pending_payment: 'Ожидаем подтверждения оплаты',
+		confirmed: 'Запись подтверждена', needs_reschedule: 'Оплачено — консультант предложит новое время',
+		cancelled: 'Отменена', refunded: 'Возврат', disputed: 'Платёж оспорен', expired: 'Резерв времени истёк', completed: 'Консультация проведена'
+	};
+	var PENDING_STATUSES = ['held', 'pending', 'pending_payment'];
+	var TZ_SHORT = [
+		'UTC', 'Europe/Sofia', 'Europe/Moscow', 'Europe/Kyiv', 'Europe/Minsk', 'Europe/London', 'Europe/Berlin', 'Europe/Istanbul',
+		'Asia/Tbilisi', 'Asia/Yerevan', 'Asia/Dubai', 'Asia/Almaty', 'Asia/Tashkent', 'America/New_York', 'America/Los_Angeles'
+	];
+
+	/** Аналитика: только при включённой настройке и существующем dataLayer; без id, контактов и ответов. */
+	function track(name, option) {
+		if (!cfg.analytics_events) { return; }
+		var dl = window.dataLayer;
+		if (!dl || typeof dl.push !== 'function') { return; }
+		var e = { event: name };
+		if (option) { e.option = option; }
+		try { dl.push(e); } catch (err) { /* аналитика не должна ломать страницу */ }
+	}
+	function offerText(key, legacy) {
+		var o = state && state.offers;
+		if (o && typeof o[key] === 'string' && o[key]) { return o[key]; }
+		return legacy || OFFER_DEFAULTS[key];
+	}
+
+	/* ---------- Время и часовые пояса (Intl, с учётом перехода на летнее время) ---------- */
+	function tzOk(tz) {
+		if (!tz || typeof tz !== 'string') { return false; }
+		try { new Intl.DateTimeFormat('en-GB', { timeZone: tz }); return true; } catch (e) { return false; }
+	}
+	function defaultTz() {
+		var tz = '';
+		try { tz = Intl.DateTimeFormat().resolvedOptions().timeZone; } catch (e) { tz = ''; }
+		return tzOk(tz) ? tz : BG_TZ;
+	}
+	function tzList(cur) {
+		var list = [];
+		try {
+			if (typeof Intl.supportedValuesOf === 'function') { list = Intl.supportedValuesOf('timeZone').slice(); }
+		} catch (e) { list = []; }
+		if (!list.length) { list = TZ_SHORT.slice(); }
+		[cur, BG_TZ, 'UTC'].forEach(function (z) { if (z && list.indexOf(z) === -1) { list.push(z); } });
+		return list;
+	}
+	function fmtTs(ts, tz, o, loc) {
+		var d = new Date(Number(ts) * 1000);
+		o.timeZone = tzOk(tz) ? tz : 'UTC';
+		return new Intl.DateTimeFormat(loc, o).format(d);
+	}
+	function timeLabel(ts, tz) { return fmtTs(ts, tz, { hour: '2-digit', minute: '2-digit', hourCycle: 'h23', timeZoneName: 'short' }, 'en-GB'); }
+	function dateLabel(ts, tz) { return fmtTs(ts, tz, { weekday: 'short', day: 'numeric', month: 'long' }, 'ru-RU'); }
+	function dayKey(ts, tz) { return fmtTs(ts, tz, { year: 'numeric', month: '2-digit', day: '2-digit' }, 'en-CA'); }
+	function fullLabel(ts, tz) { return dateLabel(ts, tz) + ', ' + timeLabel(ts, tz); }
+	function ymdLabel(ymd) {
+		if (!isYmd(ymd)) { return String(ymd || ''); }
+		var p = ymd.split('-').map(Number);
+		return new Intl.DateTimeFormat('ru-RU', { timeZone: 'UTC', weekday: 'short', day: 'numeric', month: 'long' }).format(new Date(Date.UTC(p[0], p[1] - 1, p[2], 12)));
+	}
+	function addDaysYmd(ymd, n) {
+		var p = ymd.split('-').map(Number);
+		var d = new Date(Date.UTC(p[0], p[1] - 1, p[2] + n, 12));
+		return d.getUTCFullYear() + '-' + pad(d.getUTCMonth() + 1) + '-' + pad(d.getUTCDate());
+	}
+	function plural(n, one, few, many) {
+		var m10 = n % 10, m100 = n % 100;
+		if (m10 === 1 && m100 !== 11) { return one; }
+		if (m10 >= 2 && m10 <= 4 && (m100 < 12 || m100 > 14)) { return few; }
+		return many;
+	}
+	function formatLabel(key, f) { return (f && f.label) || FORMAT_LABELS[key] || String(key || ''); }
+	function money(pr, kind) {
+		var d = pr && pr['display_' + kind];
+		if (d) { return htmlToText(d); }
+		var v = pr && pr[kind];
+		return v ? String(v) + (pr.currency ? ' ' + pr.currency : '') : '';
+	}
+
+	/* ---------- Список записей снимка ---------- */
+	function snapshotConsultations(id) {
+		var list = [];
+		(state.snapshots || []).forEach(function (s) { if (snapId(s) === id && Array.isArray(s.consultations)) { list = s.consultations; } });
+		return list;
+	}
+	function consultWhen(c) {
+		var tz = defaultTz();
+		if (c.start_utc) { return fullLabel(c.start_utc, tz); }
+		if (c.deadline_utc) { return 'Ответ не позднее ' + fullLabel(c.deadline_utc, tz); }
+		return c.date ? ymdLabel(c.date) : '';
+	}
+	function consultationItems(list) {
+		var now = Date.now();
+		return (Array.isArray(list) ? list : []).filter(function (c) {
+			if (!c || !c.id || c.status === 'expired') { return false; }
+			return !(c.status === 'held' && c.hold_until && Number(c.hold_until) * 1000 < now);
+		}).map(function (c) {
+			var when = consultWhen(c);
+			return el('li', { class: 'bgdvzh-snap bgdvzh-snap-consult' },
+				el('span', { class: 'bgdvzh-snap-info' },
+					el('span', { class: 'bgdvzh-snap-status', text: 'Консультация: ' + formatLabel(c.format) + (c.mode && MODE_LABELS[c.mode] && c.format !== 'email' ? ' (' + MODE_LABELS[c.mode].toLowerCase() + ')' : '') }),
+					when ? el('span', { class: 'bgdvzh-snap-date', text: when }) : null,
+					el('span', { class: 'bgdvzh-snap-paid', text: BOOKING_STATUS[c.status] || 'Статус обновляется' })),
+				el('button', {
+					type: 'button', class: 'bgdvzh-btn bgdvzh-btn-secondary bgdvzh-btn-small', text: 'Открыть запись',
+					'aria-label': 'Открыть запись на консультацию: ' + formatLabel(c.format) + (when ? ', ' + when : ''),
+					onclick: function () { openBooking(String(c.id)); }
+				}));
+		});
+	}
+	function consultationsBlock(list) {
+		var items = consultationItems(list);
+		if (!items.length) { return null; }
+		return el('section', { class: 'bgdvzh-consults' },
+			el('h4', { class: 'bgdvzh-subheading', text: 'Ваши записи на консультацию' }),
+			el('ul', { class: 'bgdvzh-snaps' }, items));
+	}
+
+	/* ---------- Карточки предложений ---------- */
+	/** upsell === true: после оплаты инструкции — только карточка консультации с зачётом. */
+	function offersBlock(id, p, o, upsell) {
+		var wrap = el('div', { class: 'bgdvzh-offers' });
+		var grid = el('div', { class: 'bgdvzh-offer-grid' + (upsell ? ' bgdvzh-offer-grid-single' : '') });
+		var host = el('div', { class: 'bgdvzh-consult-host' });
+		if (!upsell) { grid.appendChild(offerBlock(o || {}, id)); }
+		wrap.appendChild(grid);
+		wrap.appendChild(host);
+		if (cfg.consult_enabled === false) { return wrap; }
+		api('GET', 'consult/options?id=' + encodeURIComponent(id)).then(function (r) {
+			var d = r.data || {};
+			// Выключено или недоступно: карточку не показываем, причину посетителю не сообщаем.
+			if (!r.ok || !d.enabled || !Array.isArray(d.formats) || !d.formats.length) { return; }
+			if (!wrap.isConnected) { return; }
+			grid.appendChild(consultCard({ id: id, opts: d, preview: p || {}, host: host, upsell: !!upsell }));
+		});
+		return wrap;
+	}
+	function consultCard(ctx) {
+		var o = ctx.opts;
+		var hid = 'bgdvzh-cc-' + (++uid);
+		var card = el('article', { class: 'bgdvzh-offer bgdvzh-offer-card bgdvzh-consult-card', 'aria-labelledby': hid });
+		card.appendChild(el('h4', { class: 'bgdvzh-subheading', id: hid, text: offerText('consult_title') }));
+		if (o.recommended && !ctx.upsell) { card.appendChild(el('p', { class: 'bgdvzh-tag', text: offerText('recommended_label') })); }
+		card.appendChild(el('p', { text: ctx.upsell ? offerText('upsell_after_instruction') : offerText('consult_text') }));
+		if (ctx.preview && ctx.preview.status === 'obstacle') {
+			card.appendChild(el('p', { class: 'bgdvzh-note', text: offerText('consult_obstacle_note') }));
+		}
+		var c = o.consultant || {};
+		if (c.name || c.experience || c.photo_url) {
+			var info = el('div', { class: 'bgdvzh-consultant' });
+			if (typeof c.photo_url === 'string' && /^https?:\/\//i.test(c.photo_url)) {
+				info.appendChild(el('img', { class: 'bgdvzh-consultant-photo', src: c.photo_url, alt: c.name ? 'Фото: ' + c.name : '', width: '64', height: '64', loading: 'lazy' }));
+			}
+			info.appendChild(el('div', { class: 'bgdvzh-consultant-text' },
+				c.name ? el('p', { class: 'bgdvzh-consultant-name', text: String(c.name) }) : null,
+				c.experience ? el('p', { class: 'bgdvzh-hint', text: String(c.experience) }) : null));
+			card.appendChild(info);
+		}
+		if (o.price) { card.appendChild(priceBlock(o.price)); }
+		var btn = el('button', {
+			type: 'button', class: 'bgdvzh-btn', text: offerText('consult_button'), 'aria-expanded': 'false',
+			onclick: function () {
+				track('bgdvzh_option_selected', 'consultation');
+				if (ctx.panel && ctx.panel.isConnected) {
+					var hd = ctx.panel.querySelector('.bgdvzh-heading');
+					if (hd) { hd.focus(); }
+					return;
+				}
+				btn.setAttribute('aria-expanded', 'true');
+				ctx.btn = btn;
+				ctx.panel = openConsultFlow(ctx);
+				ctx.host.appendChild(ctx.panel);
+				try { ctx.panel.scrollIntoView({ behavior: reduceMotion() ? 'auto' : 'smooth', block: 'start' }); } catch (e) { /* старые браузеры */ }
+				var h = ctx.panel.querySelector('.bgdvzh-heading');
+				if (h) { h.focus({ preventScroll: true }); }
+			}
+		});
+		card.appendChild(el('div', { class: 'bgdvzh-actions' }, btn));
+		return card;
+	}
+	function priceBlock(pr) {
+		var box = el('div', { class: 'bgdvzh-priceblock' });
+		if (!pr || typeof pr !== 'object') { return box; }
+		var dl = el('dl', { class: 'bgdvzh-pricelist' });
+		function row(k, v, cls) {
+			dl.appendChild(el('dt', { class: cls, text: k }));
+			dl.appendChild(el('dd', { class: cls, text: v }));
+		}
+		var credit = parseFloat(pr.credit) > 0;
+		if (credit) {
+			row('Стоимость', money(pr, 'base'));
+			row('Зачёт инструкции', '−' + money(pr, 'credit'));
+		}
+		row(credit ? 'Итого' : 'Стоимость', pr.display ? htmlToText(pr.display) : money(pr, 'item'), 'bgdvzh-price-total');
+		box.appendChild(dl);
+		if (pr.tax_note) { box.appendChild(el('p', { class: 'bgdvzh-hint', text: htmlToText(pr.tax_note) })); }
+		return box;
+	}
+
+	/* ---------- Выбор даты и времени (используется при записи и при переносе) ---------- */
+	/** o: {format, written, tz?, sel?, onChange(sel, tz)}. Возвращает {node, start, reload, tz()}. */
+	function createPicker(o) {
+		var pid = 'bgdvzh-pk' + (++uid);
+		var p = { tz: tzOk(o.tz) ? o.tz : defaultTz(), from: '', hist: [], av: null, loading: true, error: '', day: '', sel: o.sel || null };
+		var node = el('div', { class: 'bgdvzh-picker' });
+		var seq = 0;
+
+		function load(from) {
+			var my = ++seq;
+			p.loading = true;
+			p.error = '';
+			paint();
+			var q = 'consult/availability?format=' + encodeURIComponent(o.format) + '&days=14' + (from ? '&from=' + encodeURIComponent(from) : '');
+			return api('GET', q).then(function (res) {
+				if (my !== seq) { return; }
+				p.loading = false;
+				if (res.ok && res.data) { p.av = res.data; p.from = res.data.from || from || ''; }
+				else { p.av = null; p.error = errMessage(res); }
+				paint();
+			});
+		}
+		function pick(sel) {
+			p.sel = sel;
+			if (o.onChange) { o.onChange(sel, p.tz); }
+		}
+		function shift(dir) {
+			if (dir > 0) { p.hist.push(p.from); load(addDaysYmd(p.from || today(), 14)); }
+			else if (p.hist.length) { load(p.hist.pop() || ''); }
+		}
+		function optBtn(id, active, label, onclick, cls, aria) {
+			return el('button', { type: 'button', id: id, class: cls, 'aria-pressed': active ? 'true' : 'false', 'aria-label': aria || null, onclick: onclick }, label);
+		}
+		function selectedText() {
+			var s = p.sel;
+			if (!s) { return ''; }
+			if (s.start_utc) {
+				return 'Выбрано: ' + fullLabel(s.start_utc, p.tz) + (p.tz !== BG_TZ ? ' (в Болгарии: ' + timeLabel(s.start_utc, BG_TZ) + ')' : '');
+			}
+			return 'Выбрано: ' + ymdLabel(s.date) + (s.deadline_utc ? '. Ответ не позднее ' + fullLabel(s.deadline_utc, p.tz) : '');
+		}
+
+		function paint() {
+			var ae = document.activeElement;
+			var fid = ae && node.contains(ae) ? ae.id : '';
+			clear(node);
+			var tzId = pid + '-tz';
+			node.appendChild(el('div', { class: 'bgdvzh-field' },
+				el('label', { for: tzId, text: 'Часовой пояс' }),
+				el('select', {
+					id: tzId, class: 'bgdvzh-input',
+					onchange: function (e) {
+						p.tz = e.target.value;
+						p.day = '';
+						if (p.sel && o.onChange) { o.onChange(p.sel, p.tz); }
+						paint();
+					}
+				}, tzList(p.tz).map(function (z) { return el('option', { value: z, selected: z === p.tz, text: z.replace(/_/g, ' ') }); }))));
+
+			if (p.loading) {
+				node.appendChild(el('p', { class: 'bgdvzh-hint', role: 'status' }, el('span', { class: 'bgdvzh-spinner', 'aria-hidden': 'true' }), 'Загружаем свободное время…'));
+				return;
+			}
+			if (p.error || !p.av) {
+				node.appendChild(el('p', { class: 'bgdvzh-error', role: 'alert', text: p.error || GENERIC_ERROR }));
+				node.appendChild(el('button', { type: 'button', class: 'bgdvzh-btn bgdvzh-btn-secondary', text: 'Повторить', onclick: function () { load(p.from); } }));
+				return;
+			}
+			var av = p.av;
+			var written = !!o.written;
+			var any = false;
+			var next = Array.isArray(av.next_dates) ? av.next_dates : [];
+
+			if (written) {
+				var dates = Array.isArray(av.dates) ? av.dates : [];
+				any = dates.length > 0;
+				var list = any ? dates : next.filter(function (d) { return d && typeof d === 'object'; });
+				if (!any) { node.appendChild(el('p', { class: 'bgdvzh-empty', role: 'status', text: 'Свободного времени нет' })); }
+				if (list.length) {
+					if (!any) { node.appendChild(el('p', { class: 'bgdvzh-hint', text: 'Ближайшие даты:' })); }
+					var wg = el('div', { class: 'bgdvzh-slots bgdvzh-slots-wide', role: 'group', 'aria-label': 'Дата письменного ответа' });
+					list.forEach(function (d) {
+						var active = !!(p.sel && p.sel.date === d.date);
+						var txt = ymdLabel(d.date) + ' — ответ не позднее ' + fullLabel(d.deadline_utc, p.tz);
+						wg.appendChild(optBtn(pid + '-w-' + d.date, active, txt, function () {
+							pick({ date: d.date, deadline_utc: d.deadline_utc });
+							paint();
+						}, 'bgdvzh-slot' + (active ? ' is-active' : '')));
+					});
+					node.appendChild(wg);
+				}
+			} else {
+				var slots = (Array.isArray(av.slots) ? av.slots : []).slice().sort(function (a, b) { return Number(a.start_utc) - Number(b.start_utc); });
+				any = slots.length > 0;
+				if (!any) {
+					node.appendChild(el('p', { class: 'bgdvzh-empty', role: 'status', text: 'Свободного времени нет' }));
+					if (next.length) {
+						node.appendChild(el('p', { class: 'bgdvzh-hint', text: 'Ближайшие даты со свободным временем:' }));
+						var ng = el('div', { class: 'bgdvzh-slots', role: 'group', 'aria-label': 'Ближайшие даты' });
+						next.forEach(function (d) {
+							if (!isYmd(d)) { return; }
+							ng.appendChild(el('button', {
+								type: 'button', class: 'bgdvzh-slot', text: ymdLabel(d),
+								onclick: function () { p.hist.push(p.from); load(d); }
+							}));
+						});
+						node.appendChild(ng);
+					}
+				} else {
+					var groups = {};
+					var order = [];
+					slots.forEach(function (s) {
+						var k = dayKey(s.start_utc, p.tz);
+						if (!groups[k]) { groups[k] = []; order.push(k); }
+						groups[k].push(s);
+					});
+					if (!p.day || !groups[p.day]) {
+						p.day = (p.sel && p.sel.start_utc && groups[dayKey(p.sel.start_utc, p.tz)]) ? dayKey(p.sel.start_utc, p.tz) : order[0];
+					}
+					var dg = el('div', { class: 'bgdvzh-days', role: 'group', 'aria-label': 'Дата' });
+					order.forEach(function (k) {
+						var act = k === p.day;
+						dg.appendChild(optBtn(pid + '-d-' + k, act, dateLabel(groups[k][0].start_utc, p.tz), function () { p.day = k; paint(); }, 'bgdvzh-day' + (act ? ' is-active' : '')));
+					});
+					node.appendChild(dg);
+					var sg = el('div', { class: 'bgdvzh-slots', role: 'group', 'aria-label': 'Время на ' + dateLabel(groups[p.day][0].start_utc, p.tz) });
+					groups[p.day].forEach(function (s) {
+						var ts = Number(s.start_utc);
+						var act = !!(p.sel && Number(p.sel.start_utc) === ts);
+						var bg = p.tz !== BG_TZ ? timeLabel(ts, BG_TZ) + ' по Болгарии' : '';
+						sg.appendChild(optBtn(pid + '-s-' + ts, act,
+							[el('span', { class: 'bgdvzh-slot-main', text: timeLabel(ts, p.tz) }), bg ? el('span', { class: 'bgdvzh-slot-bg', text: bg }) : null],
+							function () { pick({ start_utc: ts }); paint(); },
+							'bgdvzh-slot' + (act ? ' is-active' : ''), fullLabel(ts, p.tz) + (bg ? ', ' + bg : '')));
+					});
+					node.appendChild(sg);
+				}
+				var nav = el('div', { class: 'bgdvzh-actions' });
+				if (p.hist.length) { nav.appendChild(el('button', { type: 'button', id: pid + '-prev', class: 'bgdvzh-btn bgdvzh-btn-secondary bgdvzh-btn-small', text: '← Раньше', onclick: function () { shift(-1); } })); }
+				nav.appendChild(el('button', { type: 'button', id: pid + '-next', class: 'bgdvzh-btn bgdvzh-btn-secondary bgdvzh-btn-small', text: 'Позже →', onclick: function () { shift(1); } }));
+				node.appendChild(nav);
+			}
+			node.appendChild(el('p', { class: 'bgdvzh-picked', role: 'status', text: selectedText() }));
+			if (fid) {
+				var back = byId(fid);
+				if (back) { back.focus({ preventScroll: true }); }
+			}
+		}
+		paint();
+		return {
+			node: node,
+			start: function () { return load(''); },
+			reload: function () { return load(p.from); },
+			tz: function () { return p.tz; },
+			sel: function () { return p.sel; },
+			clearSel: function () { p.sel = null; }
+		};
+	}
+
+	/* ---------- Запись: формат → время → контакты → резерв → оплата ---------- */
+	function priceOfFormat(ctx, f) {
+		return (f && f.price && typeof f.price === 'object') ? f.price : ctx.opts.price;
+	}
+	function formatInfo(f) {
+		var box = el('div', { class: 'bgdvzh-fmtinfo' });
+		if (f.written) {
+			var w = f.written;
+			var txt = 'Письменный ответ' + (w.scope ? ': ' + String(w.scope) : '');
+			box.appendChild(el('p', { text: txt }));
+			var n = Number(w.followups) || 0;
+			if (n > 0) {
+				var d = Number(w.followup_days) || 0;
+				box.appendChild(el('p', { text: (n === 1 ? 'Одно уточнение' : n + ' ' + plural(n, 'уточнение', 'уточнения', 'уточнений')) + (d ? ' в течение ' + d + ' ' + plural(d, 'дня', 'дней', 'дней') : '') }));
+			}
+		} else if (f.duration_min) {
+			var m = Number(f.duration_min);
+			box.appendChild(el('p', { text: 'Длительность: ' + m + ' ' + plural(m, 'минута', 'минуты', 'минут') }));
+		}
+		if (f.initiator_text) { box.appendChild(el('p', { class: 'bgdvzh-hint', text: String(f.initiator_text) })); }
+		return box;
+	}
+	function contactSpec(format) {
+		if (format === 'telegram') { return { label: 'Telegram: @username или телефон', hint: 'Например @username или +359…', type: 'text', ac: 'off' }; }
+		if (format === 'whatsapp') { return { label: 'Телефон WhatsApp', hint: 'Телефон с кодом страны, например +359…', type: 'tel', ac: 'tel' }; }
+		if (format === 'phone') { return { label: 'Телефон для звонка', hint: 'Телефон с кодом страны, например +359…', type: 'tel', ac: 'tel' }; }
+		return null;
+	}
+	function validEmail(v) { return /^[^\s@]+@[^\s@]+\.[^\s@]{2,}$/.test(v); }
+	function normalizePhone(v) { return String(v || '').replace(/[\s\-().]/g, ''); }
+
+	function openConsultFlow(ctx) {
+		var s = {
+			step: 1, format: ctx.opts.formats[0].key, mode: '', picker: null, tz: '', sel: null,
+			contact: '', email: '', question: '', err: {}, msg: '', busy: false, hold: null, heldKey: ''
+		};
+		var panel = el('section', { class: 'bgdvzh-flow', 'aria-label': 'Запись на консультацию' });
+
+		function fmt() {
+			var list = ctx.opts.formats;
+			for (var i = 0; i < list.length; i++) { if (list[i].key === s.format) { return list[i]; } }
+			return list[0];
+		}
+		function modes(f) { return Array.isArray(f.modes) && f.modes.length ? f.modes : [f.written ? 'written' : 'call']; }
+		function ensureMode() {
+			var ms = modes(fmt());
+			if (ms.indexOf(s.mode) === -1) { s.mode = ms[0]; }
+		}
+		function isWritten() { return !!fmt().written; }
+		function ensurePicker() {
+			if (s.picker) { return; }
+			s.picker = createPicker({
+				format: s.format, written: isWritten(), tz: s.tz, sel: s.sel,
+				onChange: function (sel, tz) { s.sel = sel; s.tz = tz; s.msg = ''; }
+			});
+			s.picker.start();
+		}
+		function close() {
+			stopHold();
+			if (panel.parentNode) { panel.parentNode.removeChild(panel); }
+			if (ctx.btn) { ctx.btn.setAttribute('aria-expanded', 'false'); ctx.btn.focus(); }
+			ctx.panel = null;
+		}
+		function stopHold() { if (holdTimer) { clearInterval(holdTimer); holdTimer = null; } }
+		function reloadOptions() {
+			return api('GET', 'consult/options?id=' + encodeURIComponent(ctx.id)).then(function (r) {
+				if (r.ok && r.data && r.data.enabled && Array.isArray(r.data.formats) && r.data.formats.length) { ctx.opts = r.data; }
+			});
+		}
+		function title() {
+			if (s.step === 1) { return 'Способ консультации'; }
+			if (s.step === 2) { return isWritten() ? 'Дата письменного ответа' : 'Дата и время'; }
+			return 'Контакты и вопрос';
+		}
+
+		function paint(focus) {
+			stopHold();
+			ensureMode();
+			clear(panel);
+			panel.appendChild(el('p', { class: 'bgdvzh-progress-text', text: 'Шаг ' + s.step + ' из 3' }));
+			panel.appendChild(el('h4', { class: 'bgdvzh-heading', tabindex: '-1', text: title() }));
+			if (s.msg) { panel.appendChild(el('div', { class: 'bgdvzh-notice', role: 'alert' }, el('p', { text: s.msg }))); }
+			if (s.step === 1) { stepFormat(); } else if (s.step === 2) { stepTime(); } else { stepContact(); }
+			if (focus !== false) {
+				var h = panel.querySelector('.bgdvzh-heading');
+				if (h) { h.focus({ preventScroll: true }); }
+			}
+		}
+		function go(n) {
+			s.step = n;
+			s.msg = '';
+			s.err = {};
+			paint();
+			try { panel.scrollIntoView({ behavior: reduceMotion() ? 'auto' : 'smooth', block: 'start' }); } catch (e) { /* старые браузеры */ }
+		}
+
+		function stepFormat() {
+			var f = fmt();
+			var fs = el('fieldset', { class: 'bgdvzh-fieldset' }, el('legend', { text: 'Как удобнее провести консультацию?' }));
+			ctx.opts.formats.forEach(function (x) {
+				var rid = 'bgdvzh-cf-fmt-' + x.key;
+				fs.appendChild(el('div', { class: 'bgdvzh-choice' },
+					el('input', {
+						type: 'radio', id: rid, name: 'bgdvzh-cf-format', value: x.key, checked: x.key === s.format,
+						onchange: function () {
+							s.format = x.key;
+							s.mode = '';
+							s.picker = null;
+							s.sel = null;
+							s.hold = null;
+							paint(false);
+							byId(rid).focus();
+						}
+					}),
+					el('label', { for: rid, text: formatLabel(x.key, x) })));
+			});
+			panel.appendChild(fs);
+			var ms = modes(f);
+			if (ms.length > 1) {
+				var mf = el('fieldset', { class: 'bgdvzh-fieldset' }, el('legend', { text: 'Режим' }));
+				ms.forEach(function (m) {
+					var mid = 'bgdvzh-cf-mode-' + m;
+					mf.appendChild(el('div', { class: 'bgdvzh-choice' },
+						el('input', {
+							type: 'radio', id: mid, name: 'bgdvzh-cf-mode', value: m, checked: m === s.mode,
+							onchange: function () { s.mode = m; s.hold = null; }
+						}),
+						el('label', { for: mid, text: MODE_LABELS[m] || m })));
+				});
+				panel.appendChild(mf);
+			}
+			panel.appendChild(formatInfo(f));
+			panel.appendChild(priceBlock(priceOfFormat(ctx, f)));
+			panel.appendChild(el('div', { class: 'bgdvzh-nav' },
+				el('button', { type: 'button', class: 'bgdvzh-btn bgdvzh-btn-secondary', text: 'Закрыть', onclick: close }),
+				el('button', { type: 'button', class: 'bgdvzh-btn', text: 'Далее', onclick: function () { go(2); } })));
+		}
+
+		function stepTime() {
+			ensurePicker();
+			panel.appendChild(el('p', { class: 'bgdvzh-hint', text: isWritten()
+				? 'Выберите дату: письменный ответ придёт не позднее указанного срока.'
+				: 'Время показано в выбранном часовом поясе, рядом указано время в Болгарии.' }));
+			panel.appendChild(s.picker.node);
+			panel.appendChild(el('div', { class: 'bgdvzh-nav' },
+				el('button', { type: 'button', class: 'bgdvzh-btn bgdvzh-btn-secondary', text: 'Назад', onclick: function () { go(1); } }),
+				el('button', {
+					type: 'button', class: 'bgdvzh-btn', text: 'Далее',
+					onclick: function () {
+						if (!s.sel) { s.msg = isWritten() ? 'Выберите дату.' : 'Выберите время.'; paint(); return; }
+						go(3);
+					}
+				})));
+		}
+
+		function field(key, label, o) {
+			var id = 'bgdvzh-cf-' + key;
+			var hid = id + '-hint';
+			var eid = id + '-err';
+			var ctrl;
+			var common = {
+				id: id, class: 'bgdvzh-input', value: s[key], maxlength: o.maxlength || 200,
+				'aria-invalid': s.err[key] ? 'true' : null,
+				'aria-describedby': (o.hint ? hid + ' ' : '') + (s.err[key] ? eid : '') || null
+			};
+			if (o.textarea) {
+				common.rows = '5';
+				common.oninput = function (e) {
+					s[key] = e.target.value;
+					var c = byId(id + '-count');
+					if (c) { c.textContent = e.target.value.length + ' / ' + o.maxlength; }
+				};
+				ctrl = el('textarea', common);
+			} else {
+				common.type = o.type || 'text';
+				common.autocomplete = o.ac || 'off';
+				common.oninput = function (e) { s[key] = e.target.value; s.hold = null; };
+				ctrl = el('input', common);
+			}
+			return el('div', { class: 'bgdvzh-field' },
+				el('label', { for: id, text: label }),
+				o.hint ? el('p', { class: 'bgdvzh-hint', id: hid, text: o.hint }) : null,
+				ctrl,
+				o.textarea ? el('p', { class: 'bgdvzh-hint bgdvzh-counter', id: id + '-count', text: s[key].length + ' / ' + o.maxlength }) : null,
+				el('p', { class: 'bgdvzh-error', id: eid, text: s.err[key] || '', hidden: s.err[key] ? null : true }));
+		}
+
+		function summaryDl() {
+			var f = fmt();
+			var dl = el('dl', { class: 'bgdvzh-dl' });
+			dl.appendChild(el('dt', { text: 'Способ' }));
+			dl.appendChild(el('dd', { text: formatLabel(f.key, f) + (modes(f).length > 1 ? ', ' + (MODE_LABELS[s.mode] || '').toLowerCase() : '') }));
+			if (s.sel) {
+				if (s.sel.start_utc) {
+					dl.appendChild(el('dt', { text: 'Время' }));
+					dl.appendChild(el('dd', { text: fullLabel(s.sel.start_utc, s.tz) }));
+					if (s.tz !== BG_TZ) {
+						dl.appendChild(el('dt', { text: 'Время в Болгарии' }));
+						dl.appendChild(el('dd', { text: fullLabel(s.sel.start_utc, BG_TZ) }));
+					}
+				} else {
+					dl.appendChild(el('dt', { text: 'Ответ не позднее' }));
+					dl.appendChild(el('dd', { text: s.sel.deadline_utc ? fullLabel(s.sel.deadline_utc, s.tz) : ymdLabel(s.sel.date) }));
+				}
+			}
+			return dl;
+		}
+
+		function stepContact() {
+			var f = fmt();
+			var spec = contactSpec(f.key);
+			panel.appendChild(summaryDl());
+			panel.appendChild(priceBlock(priceOfFormat(ctx, f)));
+			var form = el('form', { class: 'bgdvzh-step', novalidate: true, onsubmit: function (e) { e.preventDefault(); pay(); } });
+			if (spec) { form.appendChild(field('contact', spec.label, { hint: spec.hint, type: spec.type, ac: spec.ac })); }
+			form.appendChild(field('email', spec ? 'Email для подтверждения и чека' : 'Email', {
+				type: 'email', ac: 'email',
+				hint: f.key === 'meet' ? 'Приглашение в Google Meet придёт на этот адрес.' : (f.key === 'email' ? 'Письменный ответ придёт на этот адрес.' : 'На этот адрес придёт подтверждение записи.')
+			}));
+			form.appendChild(field('question', 'Главный вопрос / что хотите уточнить', { textarea: true, maxlength: 2000 }));
+			var privacy = el('p', { class: 'bgdvzh-privacy' },
+				'Контакт, email и вопрос нужны только для проведения консультации и не передаются в системы аналитики.');
+			if (cfg.privacy_url) {
+				privacy.appendChild(document.createTextNode(' '));
+				privacy.appendChild(el('a', { href: cfg.privacy_url, target: '_blank', rel: 'noopener', text: 'Политика конфиденциальности' }));
+			}
+			form.appendChild(privacy);
+			var holdInfo = el('p', { class: 'bgdvzh-hint bgdvzh-holdinfo', id: 'bgdvzh-cf-hold', hidden: true });
+			form.appendChild(holdInfo);
+			form.appendChild(el('div', { class: 'bgdvzh-nav' },
+				el('button', { type: 'button', class: 'bgdvzh-btn bgdvzh-btn-secondary', text: 'Назад', disabled: s.busy, onclick: function () { go(2); } }),
+				el('button', { type: 'submit', class: 'bgdvzh-btn', id: 'bgdvzh-cf-pay', disabled: s.busy, text: s.busy ? 'Переходим к оплате…' : 'Перейти к оплате' })));
+			panel.appendChild(form);
+			startHoldInfo(holdInfo);
+		}
+
+		/** Информационный отсчёт резерва: ничего не продлевает и не блокирует. */
+		function startHoldInfo(node) {
+			if (!s.hold || !s.hold.until) { return; }
+			function tick() {
+				var left = Math.floor((s.hold.until - Date.now()) / 1000);
+				if (left <= 0) {
+					node.textContent = 'Резерв времени истёк: при оплате время будет зарезервировано заново, если оно ещё свободно.';
+					stopHold();
+					s.hold = null;
+					return;
+				}
+				node.textContent = 'Время зарезервировано ещё ' + pad(Math.floor(left / 60)) + ':' + pad(left % 60) + '.';
+			}
+			node.hidden = false;
+			tick();
+			if (s.hold) { holdTimer = setInterval(tick, 1000); }
+		}
+
+		function buildBody() {
+			var f = fmt();
+			var spec = contactSpec(f.key);
+			var err = {};
+			var email = s.email.trim();
+			var contact = s.contact.trim();
+			if (!validEmail(email)) { err.email = 'Укажите корректный адрес email.'; }
+			if (f.key === 'telegram') {
+				if (/^@?[A-Za-z0-9_]{5,32}$/.test(contact)) { contact = '@' + contact.replace(/^@/, ''); }
+				else if (/^\+\d{8,15}$/.test(normalizePhone(contact))) { contact = normalizePhone(contact); }
+				else { err.contact = 'Укажите Telegram в виде @username (5–32 символа: латиница, цифры, подчёркивание) или телефон в формате +359…'; }
+			} else if (spec) {
+				contact = normalizePhone(contact);
+				if (!/^\+\d{8,15}$/.test(contact)) { err.contact = 'Укажите телефон в международном формате: + и от 8 до 15 цифр.'; }
+			} else {
+				contact = '';
+			}
+			if (s.question.length > 2000) { err.question = 'Вопрос слишком длинный: не более 2000 символов.'; }
+			s.err = err;
+			if (Object.keys(err).length) { return null; }
+			var body = {
+				id: ctx.id, format: f.key, mode: s.mode, contact: contact, email: email,
+				question: s.question, visitor_tz: s.tz || defaultTz()
+			};
+			if (f.written) { body.date = s.sel.date; } else { body.start_utc = s.sel.start_utc; }
+			return body;
+		}
+
+		function focusFirstError() {
+			var keys = ['contact', 'email', 'question'];
+			for (var i = 0; i < keys.length; i++) {
+				if (s.err[keys[i]]) { var n = byId('bgdvzh-cf-' + keys[i]); if (n) { n.focus(); } return; }
+			}
+		}
+
+		function requestHold(body, key, retried) {
+			var tok = ctx.opts.csrf && ctx.opts.csrf.hold;
+			return api('POST', 'consult/hold', body, { csrf: tok }).then(function (res) {
+				var b = res.data && res.data.booking;
+				if (res.ok && b && b.id) {
+					s.hold = { id: String(b.id), csrf: res.data.csrf || {}, until: (Number(b.hold_until) || 0) * 1000 };
+					s.heldKey = key;
+					return true;
+				}
+				if (res.status === 403 && !retried) {
+					return reloadOptions().then(function () { return requestHold(body, key, true); });
+				}
+				failHold(res);
+				return false;
+			});
+		}
+		function failHold(res) {
+			var d = res.data || {};
+			var code = d.code || '';
+			s.hold = null;
+			s.msg = errMessage(res);
+			if (res.status === 422 && d.errors && typeof d.errors === 'object') {
+				s.err = {};
+				['contact', 'email', 'question'].forEach(function (k) { if (typeof d.errors[k] === 'string') { s.err[k] = d.errors[k]; } });
+				var timeErr = ['start_utc', 'date', 'mode', 'visitor_tz'].filter(function (k) { return d.errors[k]; });
+				if (timeErr.length && !Object.keys(s.err).length) {
+					s.msg = String(d.errors[timeErr[0]]);
+					s.step = timeErr[0] === 'mode' ? 1 : 2;
+				}
+				return;
+			}
+			if (['time_taken', 'time_unavailable', 'date_full', 'date_unavailable'].indexOf(code) !== -1) {
+				s.step = 2;
+				s.sel = null;
+				if (s.picker) { s.picker.clearSel(); s.picker.reload(); }
+				return;
+			}
+			if (code === 'credit_busy') { reloadOptions(); }
+		}
+		function requestCheckout() {
+			var h = s.hold;
+			return api('POST', 'consult/checkout', { b: h.id }, { csrf: h.csrf && h.csrf.checkout }).then(function (res) {
+				var d = res.data || {};
+				if (res.ok && typeof d.redirect === 'string' && /^https?:\/\//i.test(d.redirect)) {
+					try { window.sessionStorage.setItem(BOOKING_CO_KEY, h.id); } catch (e) { /* без хранилища */ }
+					track('bgdvzh_checkout_opened', 'consultation');
+					window.location.assign(d.redirect);
+					return true;
+				}
+				s.busy = false;
+				if (res.status === 409 && d.code === 'in_progress') {
+					openBooking(h.id);
+					return false;
+				}
+				if (res.status === 409 && d.code === 'price_changed') {
+					s.hold = null;
+					s.msg = 'Цена изменилась. Проверьте новую стоимость и нажмите «Перейти к оплате» ещё раз.';
+					return reloadOptions().then(function () { return false; });
+				}
+				if (res.status === 409 && d.code === 'hold_expired') {
+					s.hold = null;
+					s.msg = 'Время резерва истекло. Нажмите «Перейти к оплате», чтобы зарезервировать время заново.';
+					return false;
+				}
+				s.msg = res.status === 0 ? 'Не удалось перейти к оплате. Время зарезервировано, попробуйте ещё раз.' : errMessage(res);
+				return false;
+			});
+		}
+		/** Оплата без успешного резерва не запускается: сначала hold, затем checkout. */
+		function pay() {
+			if (s.busy) { return; }
+			s.msg = '';
+			var body = buildBody();
+			if (!body) {
+				paint(false);
+				focusFirstError();
+				return;
+			}
+			s.busy = true;
+			var btn = byId('bgdvzh-cf-pay');
+			if (btn) { btn.disabled = true; btn.textContent = 'Переходим к оплате…'; }
+			var key = JSON.stringify(body);
+			var reuse = s.hold && s.heldKey === key && s.hold.until > Date.now() + 5000;
+			(reuse ? Promise.resolve(true) : requestHold(body, key, false)).then(function (ok) {
+				if (!ok) { s.busy = false; return null; }
+				return requestCheckout();
+			}).then(function (redirected) {
+				if (redirected === true) { return; }
+				s.busy = false;
+				paint();
+				if (s.step === 3) { focusFirstError(); }
+			});
+		}
+
+		paint(false);
+		return panel;
+	}
+
+	/* ---------- Экран записи ---------- */
+	function openBooking(bid) {
+		stopPoll();
+		return api('GET', 'consult/booking?b=' + encodeURIComponent(bid)).then(function (res) {
+			var b = res.data && res.data.booking;
+			if (!res.ok || !b) {
+				showInline(res.status === 404 ? 'Запись не найдена или нет доступа.' : errMessage(res));
+				return false;
+			}
+			if (res.data.csrf) { bookingCsrf[b.id || bid] = res.data.csrf; }
+			showBooking(b);
+			return true;
+		});
+	}
+	function bookingRow(dl, k, v) {
+		if (v === '' || v === null || v === undefined) { return; }
+		dl.appendChild(el('dt', { text: k }));
+		dl.appendChild(el('dd', { text: String(v) }));
+	}
+	function showBooking(b, flash) {
+		stopPoll();
+		lastResult = null;
+		clear(notice);
+		clear(live);
+		clear(main);
+		var st = String(b.status || '');
+		var vtz = tzOk(b.visitor_tz) ? b.visitor_tz : defaultTz();
+		var written = b.kind === 'written' || !!b.written;
+		var times = b.times || {};
+		var wrap = el('div', { class: 'bgdvzh-booking' });
+		wrap.appendChild(heading('Запись на консультацию'));
+		if (flash) { wrap.appendChild(el('div', { class: 'bgdvzh-notice', role: 'status' }, el('p', { text: flash }))); }
+		var ownsSnapshot = (state.snapshots || []).some(function (x) { return snapId(x) === String(b.snapshot || ''); });
+
+		var tone = { confirmed: 'ok', needs_reschedule: 'check', held: 'check', pending: 'check', pending_payment: 'check', completed: 'ok' }[st] || 'info';
+		var statusText = BOOKING_STATUS[st] || 'Статус записи обновляется';
+		wrap.appendChild(el('p', { class: 'bgdvzh-status bgdvzh-status-' + tone, role: 'status' },
+			PENDING_STATUSES.indexOf(st) !== -1 ? el('span', { class: 'bgdvzh-spinner', 'aria-hidden': 'true' }) : null,
+			el('span', { text: statusText })));
+
+		var showDetails = st === 'confirmed' || st === 'needs_reschedule' || st === 'completed';
+		if (PENDING_STATUSES.indexOf(st) !== -1) {
+			wrap.appendChild(el('p', { class: 'bgdvzh-hint', text: 'Обычно это занимает меньше минуты. Страница обновится сама.' }));
+			startBookingPoll(wrap, b);
+		} else if (st === 'cancelled') {
+			wrap.appendChild(el('p', { text: 'Эта запись отменена.' }));
+		} else if (st === 'refunded') {
+			wrap.appendChild(el('p', { text: 'Оплата по этой записи возвращена, запись закрыта.' }));
+		} else if (st === 'disputed') {
+			wrap.appendChild(el('p', { text: 'Платёж по этой записи оспорен, запись приостановлена.' }));
+		} else if (st === 'expired') {
+			wrap.appendChild(el('p', { text: 'Время резерва истекло, запись не оформлена. Выберите время заново.' }));
+		}
+
+		if (showDetails) {
+			if (st === 'confirmed' && trackBooking === (b.id || '')) { trackBooking = ''; track('bgdvzh_purchase_confirmed', 'consultation'); }
+			var dl = el('dl', { class: 'bgdvzh-dl bgdvzh-booking-dl' });
+			bookingRow(dl, 'Способ', formatLabel(b.format) + (b.mode && b.mode !== 'written' && MODE_LABELS[b.mode] && (b.format === 'telegram' || b.format === 'whatsapp') ? ', ' + MODE_LABELS[b.mode].toLowerCase() : ''));
+			if (!written && times.start_utc) {
+				bookingRow(dl, 'Время', fullLabel(times.start_utc, vtz));
+				if (vtz !== BG_TZ) { bookingRow(dl, 'Время в Болгарии', fullLabel(times.start_utc, BG_TZ)); }
+				if (b.duration_min) { bookingRow(dl, 'Длительность', b.duration_min + ' ' + plural(Number(b.duration_min), 'минута', 'минуты', 'минут')); }
+			} else if (written && times.deadline_utc) {
+				bookingRow(dl, 'Ответ не позднее', fullLabel(times.deadline_utc, vtz));
+				if (b.written && b.written.scope) { bookingRow(dl, 'Состав ответа', b.written.scope); }
+			}
+			bookingRow(dl, 'Контакт', b.contact);
+			bookingRow(dl, 'Email', b.email);
+			bookingRow(dl, 'Ваш вопрос', b.question);
+			wrap.appendChild(dl);
+			if (b.initiator_text) { wrap.appendChild(el('p', { class: 'bgdvzh-hint', text: String(b.initiator_text) })); }
+			if (b.format === 'meet') {
+				if (typeof b.meet_url === 'string' && /^https:\/\/meet\.google\.com\/[a-z]{3}-[a-z]{4}-[a-z]{3}$/.test(b.meet_url)) {
+					wrap.appendChild(el('p', null, el('a', { class: 'bgdvzh-btn', href: b.meet_url, target: '_blank', rel: 'noopener', text: 'Открыть Google Meet' })));
+				} else {
+					wrap.appendChild(el('p', { class: 'bgdvzh-note', text: 'Ссылка на Google Meet будет отправлена отдельно.' }));
+				}
+			}
+		}
+
+		var actions = el('div', { class: 'bgdvzh-actions' });
+		if (st === 'confirmed' && !written && typeof b.ics_url === 'string' && /^https?:\/\//i.test(b.ics_url)) {
+			var icsHref = b.ics_url + (cfg.nonce ? (b.ics_url.indexOf('?') === -1 ? '?' : '&') + '_wpnonce=' + encodeURIComponent(cfg.nonce) : '');
+			actions.appendChild(el('a', { class: 'bgdvzh-btn bgdvzh-btn-secondary', href: icsHref, text: 'Скачать .ics' }));
+		}
+		if (b.instruction && b.instruction.available && b.instruction.result_id) {
+			actions.appendChild(el('button', {
+				type: 'button', class: 'bgdvzh-btn', text: 'Открыть инструкцию',
+				onclick: function () { openResult(String(b.instruction.result_id)); }
+			}));
+		} else if (ownsSnapshot) {
+			actions.appendChild(el('button', {
+				type: 'button', class: 'bgdvzh-btn bgdvzh-btn-secondary', text: 'К результату',
+				onclick: function () { openResult(String(b.snapshot)); }
+			}));
+		}
+		if (actions.firstChild) { wrap.appendChild(actions); }
+
+		if (st === 'confirmed') {
+			wrap.appendChild(el('p', { class: 'bgdvzh-hint', text: 'Чтобы перенести или отменить запись, напишите на ' + (b.contact_email || 'почту организатора') + '.' }));
+		} else if (st === 'needs_reschedule') {
+			wrap.appendChild(el('p', { class: 'bgdvzh-hint', text: 'Оплата получена, но выбранное время уже занято. Консультант свяжется с вами и предложит новое время. Персональная инструкция уже доступна.' }));
+		}
+		main.appendChild(wrap);
+		scrollToApp();
+		focusHeading();
+	}
+	function startBookingPoll(wrap, b) {
+		var started = Date.now();
+		var box = el('div', { class: 'bgdvzh-actions' });
+		wrap.appendChild(box);
+		pollTimer = setInterval(function () {
+			if (Date.now() - started > 180000) {
+				stopPoll();
+				clear(box);
+				box.appendChild(el('p', { text: 'Подтверждение оплаты пока не получено.' }));
+				box.appendChild(el('button', { type: 'button', class: 'bgdvzh-btn', text: 'Проверить ещё раз', onclick: function () { openBooking(String(b.id)); } }));
+				return;
+			}
+			api('GET', 'consult/booking?b=' + encodeURIComponent(b.id)).then(function (res) {
+				var nb = res.data && res.data.booking;
+				if (!res.ok || !nb || !pollTimer) { return; }
+				if (res.data.csrf) { bookingCsrf[nb.id || b.id] = res.data.csrf; }
+				if (PENDING_STATUSES.indexOf(String(nb.status)) === -1) { showBooking(nb); }
+			});
+		}, 5000);
+	}
 	/* ---------- Стартовый экран ---------- */
 	function renderStart() {
 		stopPoll();
@@ -1373,12 +2325,14 @@
 				el('span', { class: 'bgdvzh-snap-info' },
 					el('span', { class: 'bgdvzh-snap-status bgdvzh-snap-' + (STATUS_BADGE[st] ? st : 'check'), text: STATUS_BADGE[st] || 'Результат' }),
 					el('span', { class: 'bgdvzh-snap-date', text: orDash(s.date || s.created_at) }),
-					s.payment === 'paid' ? el('span', { class: 'bgdvzh-snap-paid', text: 'Инструкция оплачена' }) : null),
+					s.payment === 'paid' ? el('span', { class: 'bgdvzh-snap-paid', text: 'Инструкция оплачена' }) : null,
+					s.payment === 'admin' ? el('span', { class: 'bgdvzh-snap-paid', text: 'Доступ администратора' }) : null),
 				el('button', {
 					type: 'button', class: 'bgdvzh-btn bgdvzh-btn-secondary bgdvzh-btn-small', text: 'Открыть',
 					'aria-label': 'Открыть результат от ' + orDash(s.date || s.created_at),
 					onclick: function () { openResult(sid); }
 				})));
+			consultationItems(s.consultations).forEach(function (li) { ul.appendChild(li); });
 		});
 		wrap.appendChild(ul);
 		wrap.appendChild(el('div', { class: 'bgdvzh-actions' },
@@ -1413,20 +2367,47 @@
 			coId = window.sessionStorage.getItem(CHECKOUT_KEY);
 			window.sessionStorage.removeItem(CHECKOUT_KEY);
 		} catch (e) { coId = null; }
+		var bToken = null;
+		var coBooking = null;
+		try {
+			bToken = window.sessionStorage.getItem(BOOKING_TOKEN_KEY);
+			coBooking = window.sessionStorage.getItem(BOOKING_CO_KEY);
+			window.sessionStorage.removeItem(BOOKING_CO_KEY);
+		} catch (e) { bToken = null; coBooking = null; }
 		var start = Promise.resolve(null);
+		var openBookingId = '';
 		if (token) {
 			start = api('POST', 'grant', { token: token }).then(function (res) {
 				try { window.sessionStorage.removeItem(TOKEN_KEY); } catch (e) { /* без хранилища */ }
 				return res.ok ? snapId(res.data) : null;
 			});
 		}
+		if (bToken) {
+			// Ссылка управления записью из письма: обмен токена на grant-cookie, затем экран записи.
+			start = start.then(function (prev) {
+				return api('POST', 'grant', { token: bToken, kind: 'booking' }).then(function (res) {
+					try { window.sessionStorage.removeItem(BOOKING_TOKEN_KEY); } catch (e) { /* без хранилища */ }
+					if (res.ok && res.data) {
+						var bk = res.data.booking;
+						openBookingId = typeof bk === 'string' ? bk : String((bk && bk.id) || '');
+					}
+					return prev;
+				});
+			});
+		} else if (coBooking && /^[A-Za-z0-9_-]{6,80}$/.test(coBooking)) {
+			openBookingId = coBooking;
+			trackBooking = coBooking;
+		}
 		start.then(function (grantId) {
 			return refreshState().then(function () {
 				if (state.draft && state.draft.data) { applyDraft(state.draft); }
+				if (openBookingId) {
+					return openBooking(openBookingId).then(function (ok) { if (!ok) { renderStart(); } });
+				}
 				if (!grantId && coId) {
 					// Возврат с оплаты: результат открывается, только если покупка уже начата (оплачена или ждёт подтверждения).
 					(state.snapshots || []).forEach(function (s) {
-						if (snapId(s) === coId && (s.payment === 'paid' || s.payment === 'pending')) { grantId = coId; }
+						if (snapId(s) === coId && (s.payment === 'paid' || s.payment === 'pending')) { grantId = coId; trackPaid = coId; }
 					});
 				}
 				if (!grantId && !(state.snapshots || []).length && !(state.draft && state.draft.data) && (state.granted || []).length === 1) { grantId = snapId(state.granted[0]); }

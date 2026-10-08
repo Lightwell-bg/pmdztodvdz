@@ -63,7 +63,7 @@ if ( defined( 'BGINFO_PMZH_DVZH_PRIVATE_DIR' ) && '' !== (string) BGINFO_PMZH_DV
 	}
 }
 
-foreach ( array( 'sessions', 'drafts', 'snapshots', 'purchases', 'grants', 'documents', 'templates', 'events' ) as $bgdvzh_table ) {
+foreach ( array( 'sessions', 'drafts', 'snapshots', 'purchases', 'grants', 'documents', 'templates', 'events', 'units', 'seats', 'bookings', 'credits', 'notifications', 'messages' ) as $bgdvzh_table ) {
 	$wpdb->query( 'DROP TABLE IF EXISTS `' . esc_sql( $wpdb->prefix . 'bgdvzh_' . $bgdvzh_table ) . '`' ); // phpcs:ignore WordPress.DB.DirectDatabaseQuery,WordPress.DB.PreparedSQL
 }
 

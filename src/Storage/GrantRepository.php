@@ -17,6 +17,8 @@ final class GrantRepository {
 
 	public const KIND_LINK   = 'link';
 	public const KIND_COOKIE = 'cookie';
+	/** Ссылка управления записью на консультацию (из письма-подтверждения). */
+	public const KIND_BOOKING = 'booking';
 
 	/**
 	 * Выпускает grant. Возвращает сырой токен (в БД он не сохраняется).

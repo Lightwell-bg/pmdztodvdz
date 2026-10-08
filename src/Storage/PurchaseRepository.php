@@ -109,7 +109,10 @@ final class PurchaseRepository {
 	 * При повторном edd_built_order позиции заказа получают новые id —
 	 * тогда обновляется order_item_id.
 	 *
-	 * @param array{order_item_id:int,download_id:int,price_id:?int,user_id:int,session_id:int,item_total:float} $data
+	 * `kind` ('instruction'|'consultation', по умолчанию instruction) и `booking_id`
+	 * (для консультации) необязательны.
+	 *
+	 * @param array{order_item_id:int,download_id:int,price_id:?int,user_id:int,session_id:int,item_total:float,kind?:string,booking_id?:int} $data
 	 * @return array<string,mixed>|null
 	 */
 	public function upsertForOrderSnapshot( int $orderId, int $snapshotId, array $data ): ?array {
@@ -125,11 +128,11 @@ final class PurchaseRepository {
 			$wpdb->suppress_errors( true );
 			$inserted = $wpdb->query(
 				$wpdb->prepare(
-					"INSERT INTO {$t} (snapshot_id, order_id, order_item_id, download_id, price_id, user_id, session_id, state, item_total, created_at, updated_at) VALUES (%d, %d, %d, %d, " . ( null === $data['price_id'] ? 'NULL' : '%d' ) . ", %d, %d, 'pending', %s, %s, %s)",
+					"INSERT INTO {$t} (snapshot_id, order_id, order_item_id, download_id, price_id, user_id, session_id, state, item_total, kind, booking_id, created_at, updated_at) VALUES (%d, %d, %d, %d, " . ( null === $data['price_id'] ? 'NULL' : '%d' ) . ", %d, %d, 'pending', %s, %s, %d, %s, %s)",
 					...array_merge(
 						array( $snapshotId, $orderId, (int) $data['order_item_id'], (int) $data['download_id'] ),
 						null === $data['price_id'] ? array() : array( (int) $data['price_id'] ),
-						array( (int) $data['user_id'], (int) $data['session_id'], number_format( (float) $data['item_total'], 9, '.', '' ), $now, $now )
+						array( (int) $data['user_id'], (int) $data['session_id'], number_format( (float) $data['item_total'], 9, '.', '' ), self::kindOf( $data ), (int) ( $data['booking_id'] ?? 0 ), $now, $now )
 					)
 				)
 			);
@@ -153,11 +156,11 @@ final class PurchaseRepository {
 		$wpdb->suppress_errors( true );
 		$updated = $wpdb->query(
 			$wpdb->prepare(
-				"UPDATE {$t} SET order_item_id = %d, download_id = %d, price_id = " . ( null === $data['price_id'] ? 'NULL' : '%d' ) . ", user_id = %d, session_id = %d, item_total = %s, updated_at = %s WHERE order_id = %d AND snapshot_id = %d",
+				"UPDATE {$t} SET order_item_id = %d, download_id = %d, price_id = " . ( null === $data['price_id'] ? 'NULL' : '%d' ) . ", user_id = %d, session_id = %d, item_total = %s, kind = %s, booking_id = %d, updated_at = %s WHERE order_id = %d AND snapshot_id = %d",
 				...array_merge(
 					array( (int) $data['order_item_id'], (int) $data['download_id'] ),
 					null === $data['price_id'] ? array() : array( (int) $data['price_id'] ),
-					array( (int) $data['user_id'], (int) $data['session_id'], number_format( (float) $data['item_total'], 9, '.', '' ), $now, $orderId, $snapshotId )
+					array( (int) $data['user_id'], (int) $data['session_id'], number_format( (float) $data['item_total'], 9, '.', '' ), self::kindOf( $data ), (int) ( $data['booking_id'] ?? 0 ), $now, $orderId, $snapshotId )
 				)
 			)
 		);
@@ -171,6 +174,21 @@ final class PurchaseRepository {
 		}
 
 		return $this->byId( (int) $existing['id'] );
+	}
+
+	/** @param array<string,mixed> $data */
+	private static function kindOf( array $data ): string {
+		return 'consultation' === ( $data['kind'] ?? '' ) ? 'consultation' : 'instruction';
+	}
+
+	/** @return array<string,mixed>|null */
+	public function byBooking( int $bookingId ): ?array {
+		global $wpdb;
+
+		$t   = Schema::table( 'purchases' );
+		$row = $wpdb->get_row( $wpdb->prepare( "SELECT * FROM {$t} WHERE booking_id = %d AND kind = 'consultation' ORDER BY id DESC LIMIT 1", $bookingId ), ARRAY_A );
+
+		return is_array( $row ) ? $row : null;
 	}
 
 	/**

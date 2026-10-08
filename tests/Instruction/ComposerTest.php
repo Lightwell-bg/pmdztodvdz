@@ -363,4 +363,226 @@ final class ComposerTest extends TestCase {
 		$this->assertStringStartsWith( 'Сначала устраните препятствия', $steps['items'][0] );
 		$this->assertStringContainsString( 'София', implode( "\n", $steps['items'] ) );
 	}
+
+	// --- Бесплатный разбор по разделам -------------------------------------
+
+	/** @return array<string,mixed> */
+	private function analysisFor( array $answers ): array {
+		$preview = $this->composer()->preview( self::evaluate( $answers ), $answers );
+		$this->assertArrayHasKey( 'analysis', $preview );
+
+		return $preview['analysis'];
+	}
+
+	public function testPreviewWithoutAnswersHasNoAnalysis(): void {
+		$preview = $this->composer()->preview( self::evaluate( AnswersFactory::base() ) );
+		$this->assertArrayNotHasKey( 'analysis', $preview );
+	}
+
+	#[DataProvider( 'scenarioNames' )]
+	public function testAnalysisHasSixSectionsWithValidStatuses( string $name ): void {
+		$analysis = $this->analysisFor( AnswersFactory::scenarioAnswers()[ $name ] );
+
+		$this->assertSame(
+			array( 'residence', 'trips', 'housing', 'health', 'funds', 'unknowns' ),
+			array_column( $analysis['sections'], 'id' ),
+			$name
+		);
+		$this->assertNotSame( '', $analysis['period'] );
+		$this->assertNotEmpty( $analysis['facts'] );
+
+		foreach ( $analysis['sections'] as $s ) {
+			$this->assertContains( $s['status'], array( 'ok', 'check', 'obstacle', 'info' ), "{$name}: {$s['id']}" );
+			$this->assertNotSame( '', $s['title'] );
+			$this->assertNotEmpty( $s['lines'], "{$name}: {$s['id']} без строк" );
+		}
+	}
+
+	public function testAnalysisStatusMatchesWorstFindingOfArea(): void {
+		$areas = array(
+			'residence' => array( 'residence', 'special' ),
+			'trips'     => array( 'trips' ),
+			'housing'   => array( 'housing' ),
+			'health'    => array( 'health' ),
+			'funds'     => array( 'funds' ),
+			'unknowns'  => array( 'documents', 'applicant' ),
+		);
+		$rank  = array( 'info' => 0, 'ok' => 1, 'check' => 2, 'obstacle' => 3 );
+
+		foreach ( AnswersFactory::scenarioAnswers() as $name => $answers ) {
+			$result   = self::evaluate( $answers );
+			$analysis = $this->analysisFor( $answers );
+
+			foreach ( $analysis['sections'] as $s ) {
+				$worst = 'info';
+
+				foreach ( $result['findings'] as $f ) {
+					if ( in_array( $f['area'], $areas[ $s['id'] ], true ) && $rank[ $f['severity'] ] > $rank[ $worst ] ) {
+						$worst = $f['severity'];
+					}
+				}
+
+				// Блок неизвестных может быть повышен до check сводной строкой о пробелах.
+				if ( 'unknowns' === $s['id'] && $rank[ $s['status'] ] > $rank[ $worst ] ) {
+					$this->assertSame( 'check', $s['status'], "{$name}: {$s['id']}" );
+					continue;
+				}
+
+				$this->assertSame( $worst, $s['status'], "{$name}: {$s['id']}" );
+			}
+		}
+	}
+
+	public function testAnalysisObstacleScenarioMarksSectionAsObstacle(): void {
+		$analysis = $this->analysisFor( AnswersFactory::with( array( 'health' => array( 'nzok' => 'no', 'other_cover' => 'none' ) ) ) );
+		$statuses = array_column( $analysis['sections'], 'status', 'id' );
+
+		$this->assertSame( 'obstacle', $statuses['health'] );
+		$this->assertContains( 'obstacle', $statuses );
+	}
+
+	/** @return array<string,mixed> */
+	private static function analysisSectionById( array $analysis, string $id ): array {
+		foreach ( $analysis['sections'] as $s ) {
+			if ( $id === $s['id'] ) {
+				return $s;
+			}
+		}
+
+		self::fail( 'нет блока ' . $id );
+	}
+
+	public function testSpecialFindingsAppearInResidenceBlock(): void {
+		$answers  = AnswersFactory::with( array( 'special' => array( 'blue_card' => 'yes' ) ) );
+		$result   = self::evaluate( $answers );
+		$analysis = $this->analysisFor( $answers );
+		$res      = self::analysisSectionById( $analysis, 'residence' );
+		$text     = implode( "\n", $res['lines'] );
+		$found    = false;
+
+		foreach ( $result['findings'] as $f ) {
+			if ( 'special' === $f['area'] && 'info' !== $f['severity'] ) {
+				$found = true;
+				$this->assertStringContainsString( $this->composer()->text( $f, 'short' ), $text, $f['code'] );
+			}
+		}
+
+		$this->assertTrue( $found, 'нет особых findings в сценарии Синей карты' );
+		$this->assertStringNotContainsString( 'Учебных разрешений по ст. 24в', $text );
+	}
+
+	public function testResidenceBlockSaysNoSpecialGroundsWhenNone(): void {
+		$res = self::analysisSectionById( $this->analysisFor( AnswersFactory::base() ), 'residence' );
+		$this->assertStringContainsString( 'Учебных разрешений по ст. 24в', implode( "\n", $res['lines'] ) );
+	}
+
+	public function testUnknownsBlockListsTripsAndIsCheckForIncompleteTrips(): void {
+		$answers  = AnswersFactory::with( array( 'trips_any' => 'yes', 'trips' => array(), 'trips_complete' => 'partial' ) );
+		$result   = self::evaluate( $answers );
+		$codes    = array_column( $result['findings'], 'code' );
+		$this->assertContains( 'TRIP_INCOMPLETE', $codes );
+
+		$unknowns = self::analysisSectionById( $this->analysisFor( $answers ), 'unknowns' );
+		$text     = implode( "\n", $unknowns['lines'] );
+
+		$this->assertStringContainsString( 'Не хватает сведений или подтверждений', $text );
+		$this->assertStringContainsString( 'отсутствия', $text );
+		$this->assertSame( 'check', $unknowns['status'] );
+		$this->assertStringNotContainsString( 'не выявлено', $text );
+	}
+
+	public function testUnknownsBlockForBaseScenarioHasNoGapsWhenThresholdConfigured(): void {
+		// В AnswersFactory::config() задан порог дохода, поэтому «средства» в пробелы не попадают.
+		$unknowns = self::analysisSectionById( $this->analysisFor( AnswersFactory::base() ), 'unknowns' );
+		$text     = implode( "\n", $unknowns['lines'] );
+
+		$this->assertStringContainsString( 'не выявлено', $text );
+		$this->assertStringNotContainsString( 'Не хватает сведений', $text );
+		$this->assertNotSame( 'check', $unknowns['status'] );
+		$this->assertNotSame( 'obstacle', $unknowns['status'] );
+	}
+
+	public function testAnalysisTripsLineCountsOnlyCalculatedTripsAndReportsInvalid(): void {
+		$answers  = AnswersFactory::with(
+			array(
+				'trips_any'      => 'yes',
+				'trips_complete' => 'complete',
+				'trips'          => array(
+					AnswersFactory::trip( '2024-01-10', '2024-01-20' ),
+					AnswersFactory::trip( '2023-05-10', '2023-05-01' ),
+				),
+			)
+		);
+		$analysis = $this->analysisFor( $answers );
+		$trips    = array_values( array_filter( $analysis['sections'], static fn( array $s ): bool => 'trips' === $s['id'] ) )[0];
+		$text     = implode( "\n", $trips['lines'] );
+
+		$this->assertStringContainsString( 'Рассчитано поездок в проверяемом периоде: 1,', $text );
+		$this->assertStringContainsString( 'Поездок без полных или с ошибочными датами: 1', $text );
+		$this->assertStringContainsString( 'не вошли в расчёт', $text );
+	}
+
+	public function testAnalysisApproxTripShowsRange(): void {
+		$answers  = AnswersFactory::with(
+			array(
+				'trips_any'      => 'yes',
+				'trips_complete' => 'complete',
+				'trips'          => array( AnswersFactory::trip( '2024-01-10', '2024-02-10', 'approx' ) ),
+			)
+		);
+		$analysis = $this->analysisFor( $answers );
+		$trips    = array_values( array_filter( $analysis['sections'], static fn( array $s ): bool => 'trips' === $s['id'] ) )[0];
+
+		$this->assertStringContainsString( 'примерно от', implode( "\n", $trips['lines'] ) );
+		$this->assertStringNotContainsString( 'Поездок без полных', implode( "\n", $trips['lines'] ) );
+	}
+
+	public function testAnalysisForOkScenarioHasNoObstacles(): void {
+		$analysis = $this->analysisFor( AnswersFactory::base() );
+
+		$this->assertNotContains( 'obstacle', array_column( $analysis['sections'], 'status' ) );
+	}
+
+	#[DataProvider( 'scenarioNames' )]
+	public function testAnalysisDoesNotLeakDetailActionOrQuestionTexts( string $name ): void {
+		$answers  = AnswersFactory::scenarioAnswers()[ $name ];
+		$result   = self::evaluate( $answers );
+		$analysis = $this->analysisFor( $answers );
+		$lines    = self::strings( $analysis );
+
+		foreach ( $result['findings'] as $f ) {
+			$short = $this->composer()->text( $f, 'short' );
+
+			foreach ( array( 'detail', 'action', 'question' ) as $kind ) {
+				$text = $this->composer()->text( $f, $kind );
+
+				if ( '' === $text || $text === $short ) {
+					continue;
+				}
+
+				foreach ( $lines as $line ) {
+					$this->assertStringNotContainsString( $text, $line, "{$name}: {$f['code']} / {$kind} попал в разбор" );
+				}
+			}
+		}
+	}
+
+	#[DataProvider( 'scenarioNames' )]
+	public function testPreviewWithAnalysisHasNoInstructionTitlesOrPlaceholders( string $name ): void {
+		$answers = AnswersFactory::scenarioAnswers()[ $name ];
+		$preview = $this->composer()->preview( self::evaluate( $answers ), $answers );
+		// Рекламное описание состава платной инструкции (offer) названия разделов упоминает намеренно.
+		$free = $preview;
+		unset( $free['offer'] );
+		$json = (string) json_encode( $free, JSON_UNESCAPED_UNICODE );
+
+		foreach ( array( 'Персональный перечень документов', 'Последовательность действий', 'Вопросы для подразделения' ) as $title ) {
+			$this->assertStringNotContainsString( $title, $json, $name );
+		}
+
+		foreach ( self::strings( $preview ) as $text ) {
+			$this->assertStringNotContainsString( '{', $text, "{$name}: «{$text}»" );
+			$this->assertStringNotContainsString( '}', $text, "{$name}: «{$text}»" );
+		}
+	}
 }

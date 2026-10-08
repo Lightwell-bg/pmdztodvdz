@@ -82,6 +82,29 @@ final class TemplatesPage {
 		$this->area( 'offer[caveat_check]', 'Оговорка при статусе «Нужна проверка»', (string) ( $offer['caveat_check'] ?? '' ), 3 );
 		$this->area( 'offer[caveat_obstacle]', 'Оговорка при статусе «Есть препятствие»', (string) ( $offer['caveat_obstacle'] ?? '' ), 3 );
 
+		$offers = (array) ( $d['offers'] ?? array() );
+
+		echo '<h2>' . esc_html( 'Карточки выбора: инструкция и консультация' ) . '</h2>';
+		echo '<p class="description">' . esc_html( 'Тексты двух карточек после предварительного результата, предложение после покупки инструкции и пометка рекомендации. Только простой текст.' ) . '</p>';
+
+		foreach ( array(
+			'instruction_title'        => array( 'Инструкция: заголовок', false ),
+			'instruction_text'         => array( 'Инструкция: описание', true ),
+			'instruction_button'       => array( 'Инструкция: кнопка', false ),
+			'consult_title'            => array( 'Консультация: заголовок', false ),
+			'consult_text'             => array( 'Консультация: описание', true ),
+			'consult_button'           => array( 'Консультация: кнопка', false ),
+			'upsell_after_instruction' => array( 'Предложение консультации после покупки инструкции', true ),
+			'consult_obstacle_note'    => array( 'Пояснение к консультации при препятствии', true ),
+			'recommended_label'        => array( 'Пометка «Рекомендуем»', false ),
+		) as $key => $field ) {
+			if ( $field[1] ) {
+				$this->area( 'offers[' . $key . ']', $field[0], (string) ( $offers[ $key ] ?? '' ), 3 );
+			} else {
+				$this->input( 'offers[' . $key . ']', $field[0], (string) ( $offers[ $key ] ?? '' ) );
+			}
+		}
+
 		echo '<h2>' . esc_html( 'Общие тексты' ) . '</h2>';
 		$this->area( 'disclaimer', 'Оговорка (disclaimer)', (string) ( $d['disclaimer'] ?? '' ), 4 );
 		$this->area( 'method_note', 'Пояснение к методике подсчёта отсутствий', (string) ( $d['method_note'] ?? '' ), 8 );

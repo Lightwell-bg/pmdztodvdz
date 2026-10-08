@@ -13,10 +13,14 @@ declare(strict_types=1);
 namespace Bginfo\PmzhDvzh\Admin;
 
 use Bginfo\PmzhDvzh\Access\AccessPolicy;
+use Bginfo\PmzhDvzh\Access\AdminAccess;
 use Bginfo\PmzhDvzh\Commerce\EddGate;
 use Bginfo\PmzhDvzh\Cron\CronHandler;
+use Bginfo\PmzhDvzh\Http\DownloadController;
 use Bginfo\PmzhDvzh\Instruction\Composer;
+use Bginfo\PmzhDvzh\Instruction\HtmlRenderer;
 use Bginfo\PmzhDvzh\Instruction\TemplateStore;
+use Bginfo\PmzhDvzh\Pdf\DocumentService;
 use Bginfo\PmzhDvzh\Storage\DocumentRepository;
 use Bginfo\PmzhDvzh\Storage\EventRepository;
 use Bginfo\PmzhDvzh\Storage\PurchaseRepository;
@@ -30,6 +34,7 @@ final class SubmissionView {
 	public const PAGE         = 'bgdvzh';
 	public const ACTION_REGEN = 'bgdvzh_regen_pdf';
 	public const ACTION_PURGE = 'bgdvzh_purge_snapshot';
+	public const ACTION_DOWNLOAD = 'bgdvzh_admin_download';
 
 	public function __construct(
 		private SnapshotRepository $snapshots,
@@ -39,8 +44,40 @@ final class SubmissionView {
 		private AccessPolicy $policy,
 		private TemplateStore $templates,
 		private Settings $settings,
-		private SnapshotPurger $purger
+		private SnapshotPurger $purger,
+		private DocumentService $documentService,
+		private HtmlRenderer $renderer
 	) {
+	}
+
+	/**
+	 * admin-post: «Скачать PDF (без оплаты)». Nonce и право AdminAccess::can();
+	 * PDF строится из снимка на лету (без хранения), см. DocumentService::renderForSnapshot.
+	 */
+	public function handleDownload(): void {
+		$snapshotId = isset( $_REQUEST['snapshot_id'] ) ? (int) $_REQUEST['snapshot_id'] : 0; // phpcs:ignore WordPress.Security.NonceVerification -- проверяется ниже.
+
+		check_admin_referer( self::ACTION_DOWNLOAD . '_' . $snapshotId );
+
+		if ( ! AdminAccess::can() ) {
+			wp_die( esc_html( 'Недостаточно прав.' ), '', array( 'response' => 403 ) );
+		}
+
+		$snapshot = $this->snapshots->findById( $snapshotId );
+		$notice   = 'download_failed';
+
+		if ( null !== $snapshot && empty( $snapshot['purged_at'] ) && SnapshotRepository::hashMatches( $snapshot ) ) {
+			try {
+				$pdf = $this->documentService->renderForSnapshot( $snapshot );
+				$this->events->log( 'admin_download', 0, 0, 'user ' . (int) get_current_user_id() . ', snapshot …' . substr( (string) $snapshot['public_id'], -8 ) );
+				DownloadController::stream( $pdf, $snapshot );
+			} catch ( \RuntimeException $e ) {
+				$notice = 'download_failed';
+			}
+		}
+
+		wp_safe_redirect( self::url( $snapshotId, $notice ) );
+		exit;
 	}
 
 	/** Адрес экрана просмотра с nonce. */
@@ -141,6 +178,7 @@ final class SubmissionView {
 			$this->answers( $answers );
 			$this->findings( $snapshot, $result );
 			$this->preview( $preview );
+			$this->instructionBlock( $snapshot );
 		}
 
 		$this->purchasesBlock( $snapshot, $purchases, $purged );
@@ -248,7 +286,7 @@ final class SubmissionView {
 		echo '<div style="max-width:900px;background:#fff;border:1px solid #c3c4c7;padding:8px 16px">';
 		echo '<h3>' . esc_html( (string) ( $preview['title'] ?? '' ) ) . '</h3><p>' . esc_html( (string) ( $preview['intro'] ?? '' ) ) . '</p>';
 
-		if ( ! empty( $preview['reasons'] ) && is_array( $preview['reasons'] ) ) {
+		if ( empty( $preview['analysis'] ) && ! empty( $preview['reasons'] ) && is_array( $preview['reasons'] ) ) {
 			echo '<ul style="list-style:disc;margin-left:20px">';
 
 			foreach ( $preview['reasons'] as $reason ) {
@@ -258,7 +296,86 @@ final class SubmissionView {
 			echo '</ul>';
 		}
 
+		if ( ! empty( $preview['analysis'] ) && is_array( $preview['analysis'] ) ) {
+			$this->analysis( $preview['analysis'] );
+		}
+
 		echo '<p><em>' . esc_html( 'Дата расчёта: ' . (string) ( $preview['calc_date'] ?? '' ) . ', дата подачи: ' . (string) ( $preview['filing_date'] ?? '' ) ) . '</em></p></div>';
+	}
+
+	/** Бесплатный разбор по разделам (как его видит пользователь). @param array<string,mixed> $analysis */
+	private function analysis( array $analysis ): void {
+		$labels = array(
+			'ok'       => 'Подтверждается',
+			'check'    => 'Нужно проверить',
+			'obstacle' => 'Препятствие',
+			'info'     => 'Сведения',
+		);
+
+		echo '<h4>' . esc_html( 'Разбор по разделам' ) . '</h4>';
+
+		if ( ! empty( $analysis['facts'] ) && is_array( $analysis['facts'] ) ) {
+			echo '<table class="widefat striped"><tbody>';
+
+			foreach ( $analysis['facts'] as $fact ) {
+				if ( is_array( $fact ) ) {
+					echo '<tr><th scope="row" style="width:300px">' . esc_html( (string) ( $fact['label'] ?? '' ) ) . '</th><td>' . esc_html( (string) ( $fact['value'] ?? '' ) ) . '</td></tr>';
+				}
+			}
+
+			echo '</tbody></table>';
+		}
+
+		foreach ( (array) ( $analysis['sections'] ?? array() ) as $section ) {
+			if ( ! is_array( $section ) ) {
+				continue;
+			}
+
+			$status = (string) ( $section['status'] ?? 'info' );
+			echo '<h5 style="margin:12px 0 4px">' . esc_html( (string) ( $section['title'] ?? '' ) ) . ' - <em>' . esc_html( $labels[ $status ] ?? $status ) . '</em></h5>';
+
+			if ( ! empty( $section['lines'] ) && is_array( $section['lines'] ) ) {
+				echo '<ul style="list-style:disc;margin-left:20px">';
+
+				foreach ( $section['lines'] as $line ) {
+					echo '<li>' . esc_html( (string) $line ) . '</li>';
+				}
+
+				echo '</ul>';
+			}
+		}
+	}
+
+	/**
+	 * Полная инструкция (сворачиваемый блок) и кнопка «Скачать PDF (без оплаты)».
+	 * Только для тех, у кого есть бесплатный доступ (AdminAccess::can()).
+	 *
+	 * @param array<string,mixed> $snapshot
+	 */
+	private function instructionBlock( array $snapshot ): void {
+		if ( ! AdminAccess::can() ) {
+			return;
+		}
+
+		$id = (int) $snapshot['id'];
+
+		echo '<h2>' . esc_html( 'Инструкция' ) . '</h2>';
+		echo '<form method="post" action="' . esc_url( admin_url( 'admin-post.php' ) ) . '" style="margin-bottom:12px">';
+		echo '<input type="hidden" name="action" value="' . esc_attr( self::ACTION_DOWNLOAD ) . '">';
+		echo '<input type="hidden" name="snapshot_id" value="' . esc_attr( (string) $id ) . '">';
+		wp_nonce_field( self::ACTION_DOWNLOAD . '_' . $id );
+		echo '<button type="submit" class="button button-primary">' . esc_html( 'Скачать PDF (без оплаты)' ) . '</button></form>';
+
+		if ( ! SnapshotRepository::hashMatches( $snapshot ) ) {
+			echo '<p>' . esc_html( 'Инструкция не показана: контрольная сумма снимка не совпадает.' ) . '</p>';
+			return;
+		}
+
+		$html = $this->renderer->render( Json::decode( (string) $snapshot['instruction'] ) );
+
+		echo '<details style="max-width:900px;background:#fff;border:1px solid #c3c4c7;padding:8px 16px"><summary style="cursor:pointer"><strong>' . esc_html( 'Инструкция' ) . '</strong></summary>';
+		echo $html; // phpcs:ignore WordPress.Security.EscapeOutput -- HtmlRenderer экранирует весь текст.
+		echo '</details>';
 	}
 
 	/**
@@ -366,6 +483,7 @@ final class SubmissionView {
 			'purge_ok'          => array( 'success', 'Данные анкеты удалены.' ),
 			'purge_unconfirmed' => array( 'warning', 'Отметьте подтверждение, чтобы удалить данные.' ),
 			'purge_failed'      => array( 'error', 'Не удалось удалить данные: анкета не найдена.' ),
+			'download_failed'   => array( 'error', 'Не удалось подготовить PDF: анкета не найдена, данные удалены или контрольная сумма не совпадает.' ),
 		);
 
 		if ( isset( $map[ $key ] ) ) {

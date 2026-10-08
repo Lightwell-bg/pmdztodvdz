@@ -38,10 +38,17 @@ final class Composer {
 	 * Бесплатная часть: статус и 1–3 пояснения. Ничего из платной
 	 * инструкции сюда не попадает.
 	 *
+	 * Если переданы ответы, добавляется бесплатный разбор по разделам
+	 * (analysis): отметка раздела, факты из ответов, ключевые цифры расчёта
+	 * и короткие пояснения (те же short-тексты, что и в reasons). Подробные
+	 * разборы (detail), действия, документы, план и вопросы — только в
+	 * платной инструкции.
+	 *
 	 * @param array<string,mixed> $result
+	 * @param array<string,mixed> $answers
 	 * @return array<string,mixed>
 	 */
-	public function preview( array $result ): array {
+	public function preview( array $result, array $answers = array() ): array {
 		$reasons = array();
 
 		foreach ( \Bginfo\PmzhDvzh\Rules\Evaluator::previewFindings( $result, 6 ) as $f ) {
@@ -53,8 +60,7 @@ final class Composer {
 		}
 
 		$status = (string) $result['status'];
-
-		return array(
+		$out    = array(
 			'status'       => $status,
 			'title'        => (string) ( $this->templates['status_titles'][ $status ] ?? '' ),
 			'intro'        => (string) ( $this->templates['status_intro'][ $status ] ?? '' ),
@@ -65,6 +71,261 @@ final class Composer {
 			'disclaimer'   => (string) ( $this->templates['disclaimer'] ?? '' ),
 			'offer'        => $this->offer( $status ),
 		);
+
+		if ( ! empty( $answers ) ) {
+			$out['analysis'] = $this->analysis( $answers, $result );
+		}
+
+		return $out;
+	}
+
+	/**
+	 * Бесплатный разбор по разделам.
+	 *
+	 * @param array<string,mixed> $a
+	 * @param array<string,mixed> $r
+	 * @return array{period:string,facts:list<array{label:string,value:string}>,sections:list<array{id:string,title:string,status:string,lines:list<string>}>}
+	 */
+	public function analysis( array $a, array $r ): array {
+		$findings = (array) $r['findings'];
+		$filing   = DateMath::parse( (string) $r['filing_date'] );
+		$wStart   = DateMath::parse( (string) $r['window_start'] );
+		$period   = DateMath::human( $wStart ) . ' — ' . DateMath::human( null === $filing ? null : DateMath::addDays( $filing, -1 ) );
+		$facts    = array( array( 'label' => 'Проверяемый период', 'value' => $period ) );
+
+		// --- Проживание.
+		$pm    = (array) ( $a['pmzh'] ?? array() );
+		$lines = array();
+
+		if ( 'unknown' !== ( $pm['date_precision'] ?? 'unknown' ) && null !== DateMath::parse( (string) ( $pm['decision_date'] ?? '' ) ) ) {
+			$lines[] = 'ПМЖ с ' . DateMath::human( DateMath::parse( (string) $pm['decision_date'] ) ) . ( 'approx' === ( $pm['date_precision'] ?? '' ) ? ' (примерно)' : '' ) . '.';
+		}
+
+		$prior = array_values( (array) ( $a['statuses'] ?? array() ) );
+
+		if ( ! empty( $prior ) ) {
+			$kinds = array_unique( array_map( static fn( array $s ): string => Labels::label( 'status_kind', (string) ( $s['kind'] ?? 'other' ) ), $prior ) );
+			$lines[] = 'До ПМЖ указано статусов: ' . count( $prior ) . ' (' . implode( ', ', $kinds ) . ').';
+		}
+
+		$earliest = (string) ( $r['timeline']['earliest_start'] ?? '' );
+
+		if ( '' !== $earliest ) {
+			$facts[] = array( 'label' => 'Законное пребывание по вашим данным с', 'value' => DateMath::human( DateMath::parse( $earliest ) ) );
+		}
+
+		// Особые основания относятся к истории и сроку проживания.
+		$special = array_filter( $findings, static fn( array $f ): bool => 'special' === $f['area'] && 'info' !== $f['severity'] );
+
+		if ( empty( $special ) ) {
+			$lines[] = 'Учебных разрешений по ст. 24в, Синей карты, защиты и статусов в других странах ЕС по ответам нет.';
+		}
+
+		$sections   = array();
+		$sections[] = $this->analysisSection( 'residence', 'История и срок проживания', $findings, array( 'residence', 'special' ), $lines );
+
+		// --- Поездки.
+		$lines   = array();
+		$abs     = (array) ( $r['absences'] ?? array() );
+		$total   = (array) ( $abs['total'] ?? array() );
+		$rows    = array_values( array_filter( (array) ( $abs['trips'] ?? array() ), static fn( array $t ): bool => (int) ( $t['window_nights'] ?? 0 ) > 0 || ! empty( $t['crosses_window'] ) ) );
+		$longest = null;
+
+		foreach ( $rows as $t ) {
+			if ( null !== $t['nights'] && ( null === $longest || (int) $t['nights'] > (int) $longest['nights'] ) ) {
+				$longest = $t;
+			}
+		}
+
+		$invalid  = count( (array) ( $abs['invalid'] ?? array() ) );
+		$anyApprox = ! empty( array_filter( $rows, static fn( array $t ): bool => ! empty( $t['approx'] ) ) );
+
+		if ( 'no' === ( $a['trips_any'] ?? '' ) ) {
+			$lines[] = 'Вы указали, что не выезжали из Болгарии в проверяемый период.';
+		} elseif ( ! empty( $rows ) ) {
+			// При приблизительных датах показываем диапазон оценки, а не точное число.
+			$sum = $anyApprox
+				? sprintf( 'примерно от %d до %d сут.', (int) ( $total['lower'] ?? 0 ), (int) ( $total['upper'] ?? 0 ) )
+				: sprintf( '%d сут.', (int) ( $total['nights'] ?? 0 ) );
+
+			$lines[] = sprintf(
+				'Рассчитано поездок в проверяемом периоде: %d, всего вне Болгарии %s Предел — 10 календарных месяцев (%d–%d сут.).',
+				count( $rows ),
+				$sum . ( $anyApprox ? ' (часть дат приблизительная).' : '.' ),
+				(int) ( $total['limit_min'] ?? 0 ),
+				(int) ( $total['limit_max'] ?? 0 )
+			);
+			$facts[] = array(
+				'label' => 'Отсутствия за период',
+				'value' => sprintf( '%s из допустимых %d–%d', $sum, (int) ( $total['limit_min'] ?? 0 ), (int) ( $total['limit_max'] ?? 0 ) ) . ( $invalid > 0 ? ' — без поездок с неполными датами' : '' ),
+			);
+		}
+
+		if ( $invalid > 0 ) {
+			$lines[] = sprintf( 'Поездок без полных или с ошибочными датами: %d — они не вошли в расчёт, поэтому сумма может быть больше.', $invalid );
+		}
+
+		if ( null !== $longest ) {
+			$lines[] = sprintf(
+				'Самая длинная из рассчитанных поездок: %s — %s, %d сут.%s; шесть месяцев от её начала истекают %s.',
+				DateMath::human( DateMath::parse( (string) $longest['out'] ) ),
+				DateMath::human( DateMath::parse( (string) $longest['back'] ) ),
+				(int) $longest['nights'],
+				! empty( $longest['approx'] ) ? ' (даты приблизительные, точность — до месяца)' : '',
+				DateMath::human( DateMath::parse( (string) $longest['limit_date'] ) )
+			);
+			$facts[] = array( 'label' => 'Самая длинная поездка', 'value' => ( ! empty( $longest['approx'] ) ? 'около ' : '' ) . (int) $longest['nights'] . ' сут.' );
+		}
+
+		$sections[] = $this->analysisSection( 'trips', 'Отсутствия', $findings, array( 'trips' ), $lines );
+
+		// --- Жильё.
+		$h          = (array) ( $a['housing'] ?? array() );
+		$lines      = array(
+			Labels::label( 'tenure', (string) ( $h['tenure'] ?? 'unknown' ) )
+				. ( '' !== trim( (string) ( $h['region'] ?? '' ) ) ? ', ' . trim( (string) $h['region'] ) : '' )
+				. '. Документы: ' . Labels::labels( 'housing_proofs', array_map( 'strval', (array) ( $h['proofs'] ?? array() ) ) ) . '.',
+		);
+		$sections[] = $this->analysisSection( 'housing', 'Жильё', $findings, array( 'housing' ), $lines );
+
+		// --- Медицинское страхование.
+		$he    = (array) ( $a['health'] ?? array() );
+		$lines = array();
+
+		if ( 'yes' === ( $he['nzok'] ?? '' ) ) {
+			$lines[] = 'Застрахованы в болгарской системе (НЗОК). Состояние взносов: ' . mb_strtolower( Labels::label( 'contributions', (string) ( $he['contributions'] ?? 'unknown' ) ) ) . '.';
+		} else {
+			$until   = DateMath::parse( (string) ( $he['cover_until'] ?? '' ) );
+			$lines[] = 'НЗОК: ' . mb_strtolower( Labels::label( 'yes_no_unknown', (string) ( $he['nzok'] ?? 'unknown' ) ) ) . '; другое покрытие: ' . mb_strtolower( Labels::label( 'other_cover', (string) ( $he['other_cover'] ?? 'unknown' ) ) ) . ( null !== $until ? ', до ' . DateMath::human( $until ) : '' ) . '.';
+		}
+
+		$sections[] = $this->analysisSection( 'health', 'Медицинское обеспечение', $findings, array( 'health' ), $lines );
+
+		// --- Средства.
+		$fu      = (array) ( $a['funds'] ?? array() );
+		$lines   = array( 'Источники дохода: ' . mb_strtolower( Labels::labels( 'income_sources', array_map( 'strval', (array) ( $fu['income_sources'] ?? array() ) ) ) ) . '.' );
+		$proofs  = array_values( array_diff( array_map( 'strval', (array) ( $fu['income_proofs'] ?? array() ) ), array( 'none' ) ) );
+		$lines[] = empty( $proofs ) ? 'Подтверждающих документов пока нет.' : 'Подтверждения: ' . mb_strtolower( Labels::labels( 'income_proofs', $proofs ) ) . '.';
+
+		if ( null !== ( $fu['dependents'] ?? null ) && (int) $fu['dependents'] > 0 ) {
+			$lines[] = 'На содержании: ' . (int) $fu['dependents'] . ' чел. — это учитывается при оценке достаточности.';
+		}
+
+		$sections[] = $this->analysisSection( 'funds', 'Средства', $findings, array( 'funds' ), $lines );
+
+		// --- Документы и прочее (включая сведения о заявителе).
+		$d        = (array) ( $a['documents'] ?? array() );
+		$lines    = array();
+		$passport = DateMath::parse( (string) ( $d['passport_until'] ?? '' ) );
+		$card     = DateMath::parse( (string) ( $d['pmzh_card_until'] ?? '' ) );
+
+		if ( null !== $passport ) {
+			$lines[] = 'Паспорт действует до ' . DateMath::human( $passport ) . '.';
+		}
+
+		if ( null !== $card ) {
+			$lines[] = 'Карта ПМЖ действует до ' . DateMath::human( $card ) . ' (окончание срока карты не означает окончания права пребывания).';
+		}
+
+		// Неизвестные сведения в других блоках — сводной строкой, чтобы
+		// неопределённость была видна сразу, а не только внутри разделов.
+		$titles  = array( 'residence' => 'история проживания', 'special' => 'история проживания', 'trips' => 'отсутствия', 'housing' => 'жильё', 'health' => 'медицинское обеспечение', 'funds' => 'средства' );
+		$gapsIn  = array();
+
+		foreach ( $findings as $f ) {
+			if ( 'check' === $f['severity'] && isset( $titles[ $f['area'] ] ) && 1 === preg_match( '/UNKNOWN|INCOMPLETE|DATES|APPROX|PENDING|NO_PROOF|AMOUNT_UNCLEAR|NO_THRESHOLD|HEAD_UNCOVERED|UNCOVERED/', (string) $f['code'] ) ) {
+				$gapsIn[ $titles[ $f['area'] ] ] = true;
+			}
+		}
+
+		if ( ! empty( $gapsIn ) ) {
+			$lines[] = 'Не хватает сведений или подтверждений: ' . implode( ', ', array_keys( $gapsIn ) ) . '. Подробности — в соответствующих блоках выше.';
+		}
+
+		$own = array_filter( $findings, static fn( array $f ): bool => in_array( $f['area'], array( 'documents', 'applicant' ), true ) && in_array( $f['severity'], array( 'check', 'obstacle' ), true ) );
+
+		if ( empty( $gapsIn ) && empty( $own ) ) {
+			$lines[] = 'Существенных пробелов в данных и обстоятельств, требующих отдельной проверки, по ответам не выявлено.';
+		}
+
+		$block = $this->analysisSection( 'unknowns', 'Неизвестные данные и обстоятельства', $findings, array( 'documents', 'applicant' ), $lines );
+
+		if ( ! empty( $gapsIn ) && in_array( $block['status'], array( 'info', 'ok' ), true ) ) {
+			$block['status'] = 'check';
+		}
+
+		$sections[] = $block;
+
+		// Ближайшая расчётная дата подачи при препятствиях по сроку.
+		$dates = array();
+
+		foreach ( $findings as $f ) {
+			if ( 'obstacle' === $f['severity'] && ! empty( $f['params']['earliest_filing'] ) ) {
+				$dates[] = (string) $f['params']['earliest_filing'];
+			}
+		}
+
+		if ( ! empty( $dates ) ) {
+			usort( $dates, static fn( string $x, string $y ): int => strcmp( self::sortableHuman( $x ), self::sortableHuman( $y ) ) );
+			$facts[] = array( 'label' => 'Расчётная ближайшая дата подачи', 'value' => 'не раньше ' . end( $dates ) . ' (если не будет других препятствий)' );
+		}
+
+		return array(
+			'period'   => $period,
+			'facts'    => $facts,
+			'sections' => $sections,
+		);
+	}
+
+	/**
+	 * Раздел анализа: отметка = худшая severity findings раздела; строки =
+	 * факты + short-тексты findings (без detail/action).
+	 *
+	 * @param list<array<string,mixed>> $findings
+	 * @param list<string> $areas
+	 * @param list<string> $facts
+	 * @return array{id:string,title:string,status:string,lines:list<string>}
+	 */
+	private function analysisSection( string $id, string $title, array $findings, array $areas, array $facts ): array {
+		$rank   = array( 'info' => 0, 'ok' => 1, 'check' => 2, 'obstacle' => 3 );
+		// «Подтверждается» только при явном ok-finding; иначе — «Сведения».
+		$status = 'info';
+		$notes  = array();
+
+		foreach ( $findings as $f ) {
+			if ( ! in_array( $f['area'], $areas, true ) ) {
+				continue;
+			}
+
+			if ( $rank[ $f['severity'] ] > $rank[ $status ] ) {
+				$status = $f['severity'];
+			}
+
+			if ( 'info' === $f['severity'] ) {
+				continue;
+			}
+
+			$text = $this->text( $f, 'short' );
+
+			if ( '' !== $text ) {
+				$notes[ $text ] = $rank[ $f['severity'] ];
+			}
+		}
+
+		// Сначала проблемы, затем подтверждения.
+		arsort( $notes );
+
+		return array(
+			'id'     => $id,
+			'title'  => $title,
+			'status' => $status,
+			'lines'  => array_values( array_merge( array_filter( $facts, static fn( string $s ): bool => '' !== trim( $s ) ), array_keys( $notes ) ) ),
+		);
+	}
+
+	/** ДД.ММ.ГГГГ → ГГГГММДД для сравнения. */
+	private static function sortableHuman( string $d ): string {
+		return 1 === preg_match( '/^(\d{2})\.(\d{2})\.(\d{4})$/', $d, $m ) ? $m[3] . $m[2] . $m[1] : $d;
 	}
 
 	/**

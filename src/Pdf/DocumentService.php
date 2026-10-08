@@ -114,6 +114,24 @@ final class DocumentService {
 	}
 
 	/**
+	 * PDF «на лету» из инструкции снимка: без хранения и без строк документов
+	 * (бесплатный доступ администратора). Вызывающий проверяет права, что снимок
+	 * не очищен и что content_hash совпадает.
+	 *
+	 * @param array<string,mixed> $snapshot Строка snapshots.
+	 * @throws \RuntimeException Если инструкции нет.
+	 */
+	public function renderForSnapshot( array $snapshot ): string {
+		$instruction = Json::decode( (string) ( $snapshot['instruction'] ?? '' ) );
+
+		if ( empty( $instruction ) ) {
+			throw new \RuntimeException( 'Snapshot has no instruction' );
+		}
+
+		return $this->pdf->render( $this->html->document( $instruction ) );
+	}
+
+	/**
 	 * @param array<string,mixed> $purchase
 	 * @return array{state:string,pdf:?string,sha256:string}
 	 */

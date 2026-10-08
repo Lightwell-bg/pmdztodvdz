@@ -83,6 +83,55 @@ final class EddOrderReader implements OrderReader {
 		return $sum;
 	}
 
+	public function orderCurrency( int $orderId ): string {
+		if ( $orderId <= 0 || ! function_exists( 'edd_get_order' ) ) {
+			return '';
+		}
+
+		$o = edd_get_order( $orderId );
+
+		return is_object( $o ) && ! empty( $o->currency ) ? strtoupper( (string) $o->currency ) : '';
+	}
+
+	public function itemAmounts( int $orderItemId ): ?array {
+		if ( $orderItemId <= 0 || ! function_exists( 'edd_get_order_item' ) ) {
+			return null;
+		}
+
+		$i = edd_get_order_item( $orderItemId );
+
+		if ( ! is_object( $i ) || empty( $i->id ) ) {
+			return null;
+		}
+
+		return array(
+			'subtotal' => (float) $i->subtotal,
+			'discount' => (float) $i->discount,
+			'tax'      => (float) $i->tax,
+			'total'    => (float) $i->total,
+		);
+	}
+
+	public function refundAmounts( int $orderItemId ): array {
+		if ( $orderItemId <= 0 || ! function_exists( 'edd_get_order_items' ) ) {
+			return array();
+		}
+
+		$out = array();
+
+		foreach ( (array) edd_get_order_items( array( 'parent' => $orderItemId, 'number' => 200 ) ) as $r ) {
+			if ( is_object( $r ) ) {
+				$out[] = array(
+					'subtotal' => abs( (float) $r->subtotal ),
+					'discount' => abs( (float) $r->discount ),
+					'total'    => abs( (float) $r->total ),
+				);
+			}
+		}
+
+		return $out;
+	}
+
 	public function paidOrderStatuses(): array {
 		return array( 'complete', 'partially_refunded' );
 	}

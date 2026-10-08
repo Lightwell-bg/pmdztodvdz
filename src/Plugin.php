@@ -17,9 +17,20 @@ namespace Bginfo\PmzhDvzh;
 use Bginfo\PmzhDvzh\Access\AccessPolicy;
 use Bginfo\PmzhDvzh\Access\GrantManager;
 use Bginfo\PmzhDvzh\Access\SessionManager;
+use Bginfo\PmzhDvzh\Admin\ConsultationsPage;
 use Bginfo\PmzhDvzh\Admin\Notices;
+use Bginfo\PmzhDvzh\Booking\BookingCron;
+use Bginfo\PmzhDvzh\Booking\BookingService;
+use Bginfo\PmzhDvzh\Booking\BookingSync;
+use Bginfo\PmzhDvzh\Booking\CreditRefundHandler;
+use Bginfo\PmzhDvzh\Booking\CreditService;
+use Bginfo\PmzhDvzh\Booking\Mailer;
+use Bginfo\PmzhDvzh\Booking\Notifier;
+use Bginfo\PmzhDvzh\Booking\Reminders;
 use Bginfo\PmzhDvzh\Commerce\CartService;
 use Bginfo\PmzhDvzh\Commerce\CheckoutGuard;
+use Bginfo\PmzhDvzh\Commerce\ConsultGate;
+use Bginfo\PmzhDvzh\Commerce\ConsultPriceFilter;
 use Bginfo\PmzhDvzh\Commerce\EddGate;
 use Bginfo\PmzhDvzh\Commerce\EddOrderReader;
 use Bginfo\PmzhDvzh\Commerce\OrderBinder;
@@ -27,16 +38,22 @@ use Bginfo\PmzhDvzh\Commerce\OrderEvents;
 use Bginfo\PmzhDvzh\Commerce\ReceiptIntegration;
 use Bginfo\PmzhDvzh\Commerce\SuccessRedirect;
 use Bginfo\PmzhDvzh\Cron\CronHandler;
+use Bginfo\PmzhDvzh\Http\ConsultController;
 use Bginfo\PmzhDvzh\Http\DownloadController;
 use Bginfo\PmzhDvzh\Http\RestController;
 use Bginfo\PmzhDvzh\Instruction\HtmlRenderer;
 use Bginfo\PmzhDvzh\Instruction\TemplateStore;
 use Bginfo\PmzhDvzh\Pdf\DocumentService;
 use Bginfo\PmzhDvzh\Pdf\PdfRenderer;
+use Bginfo\PmzhDvzh\Schedule\ScheduleConfig;
+use Bginfo\PmzhDvzh\Storage\BookingRepository;
+use Bginfo\PmzhDvzh\Storage\CreditRepository;
+use Bginfo\PmzhDvzh\Storage\SlotRepository;
 use Bginfo\PmzhDvzh\Storage\DocumentRepository;
 use Bginfo\PmzhDvzh\Storage\DraftRepository;
 use Bginfo\PmzhDvzh\Storage\EventRepository;
 use Bginfo\PmzhDvzh\Storage\GrantRepository;
+use Bginfo\PmzhDvzh\Storage\MessageRepository;
 use Bginfo\PmzhDvzh\Storage\PurchaseRepository;
 use Bginfo\PmzhDvzh\Storage\Schema;
 use Bginfo\PmzhDvzh\Storage\SessionRepository;
@@ -63,9 +80,9 @@ final class Plugin {
 	public static function activate(): void {
 		Schema::install();
 
-		if ( ! wp_next_scheduled( CronHandler::HOOK ) ) {
-			wp_schedule_event( time() + 300, 'hourly', CronHandler::HOOK );
-		}
+		// Расписание bgdvzh_5min ещё не зарегистрировано: активация идёт до plugins_loaded.
+		add_filter( 'cron_schedules', array( CronHandler::class, 'addSchedule' ) );
+		CronHandler::ensureScheduled();
 	}
 
 	/** Деактивация снимает только cron; данные не трогает. */
@@ -83,6 +100,13 @@ final class Plugin {
 	}
 
 	private function wire(): void {
+		// После замены ZIP схема обновляется при первом же запросе (покупки пишут новые колонки).
+		if ( ! Schema::ready() && ! get_transient( 'bgdvzh_upgrading' ) ) {
+			set_transient( 'bgdvzh_upgrading', 1, 60 );
+			Schema::maybeUpgrade();
+			delete_transient( 'bgdvzh_upgrading' );
+		}
+
 		$settings = new Settings();
 
 		$sessionRepo  = new SessionRepository();
@@ -104,8 +128,71 @@ final class Plugin {
 
 		$documents   = new DocumentService( $documentRepo, $snapshots, $events, $renderer, new PdfRenderer() );
 		$orderEvents = new OrderEvents( $reader, $policy, $purchases, $documentRepo, $events );
-		$cart        = new CartService( $gate );
 		$purger      = new SnapshotPurger( $snapshots, $purchases, $grantRepo, $documentRepo, $documents, $events );
+
+		// Консультации.
+		global $wpdb;
+
+		$consultGate    = new ConsultGate( $settings );
+		$consultCfg     = $settings->consultation();
+		$bookingRepo    = new BookingRepository( $wpdb );
+		$slotRepo       = new SlotRepository( $wpdb );
+		$creditRepo     = new CreditRepository( $wpdb );
+		$notifier       = new Notifier(
+			$bookingRepo,
+			static function () use ( $consultCfg ): string {
+				$mail = (string) ( $consultCfg['admin_email'] ?? '' );
+
+				return '' !== $mail ? $mail : (string) get_option( 'admin_email', '' );
+			},
+			$wpdb
+		);
+		$bookingService = new BookingService( $bookingRepo, $slotRepo, $creditRepo, $notifier, new ScheduleConfig( $consultCfg ), $consultCfg );
+		$bookingSync    = new BookingSync( $reader, $policy, $purchases, $bookingRepo, $bookingService );
+		$creditService  = new CreditService( $reader, $policy, $purchases, $creditRepo, $bookingRepo, $bookingService, $bookingSync );
+		$bookingCron    = new BookingCron( $bookingRepo, $slotRepo, $creditRepo, $bookingSync, $bookingService, $notifier );
+		$cart           = new CartService( $gate, $consultGate );
+
+		$messageRepo   = new MessageRepository( $wpdb );
+		$creditRefund  = new CreditRefundHandler( $bookingRepo, $creditRepo, $notifier, $events );
+		$orderEvents->withBooking( $bookingSync, $bookingRepo, $creditRepo, $creditRefund );
+		$grants->withBookings( $bookingRepo );
+
+		// Письма по записям: отправитель, напоминания (действие bgdvzh_consult_tick).
+		$mailer = new Mailer(
+			static function ( array $booking ) use ( $grants, $purchases, $settings ): array {
+				$none = array( 'instruction' => '', 'manage' => '' );
+				$page = $settings->pageUrl();
+
+				if ( '' === $page || (int) $booking['id'] <= 0 ) {
+					return $none;
+				}
+
+				$purchase = $purchases->byBooking( (int) $booking['id'] );
+
+				if ( null === $purchase ) {
+					return $none;
+				}
+
+				$instruction = $grants->issueLink( $purchase );
+				$manage      = $grants->issueBookingLink( $purchase );
+
+				return array(
+					'instruction' => null === $instruction ? '' : $page . '#dvzh-k=' . $instruction,
+					'manage'      => null === $manage ? '' : $page . '#dvzh-b=' . $manage,
+				);
+			},
+			static fn( int $bookingId ): string => ConsultationsPage::cardUrl( $bookingId ),
+			$messageRepo,
+			null,
+			static function () use ( $consultCfg ): string {
+				$mail = (string) ( $consultCfg['admin_email'] ?? '' );
+
+				return '' !== $mail ? $mail : (string) get_option( 'admin_email', '' );
+			}
+		);
+		$notifier->setSender( $mailer );
+		( new Reminders( $bookingRepo, $notifier, $consultCfg ) )->register();
 
 		$this->services = array(
 			'settings'     => $settings,
@@ -126,9 +213,37 @@ final class Plugin {
 			'documents'    => $documents,
 			'orderEvents'  => $orderEvents,
 			'purger'       => $purger,
+			'consultGate'    => $consultGate,
+			'bookings'       => $bookingRepo,
+			'slots'          => $slotRepo,
+			'credits'        => $creditRepo,
+			'notifier'       => $notifier,
+			'bookingService' => $bookingService,
+			'bookingSync'    => $bookingSync,
+			'creditService'  => $creditService,
+			'messages'       => $messageRepo,
 		);
 
-		( new RestController(
+		$consultController = new ConsultController(
+			$settings,
+			$sessions,
+			$grants,
+			$snapshots,
+			$purchases,
+			$bookingRepo,
+			$slotRepo,
+			$bookingService,
+			$bookingSync,
+			$creditService,
+			$consultGate,
+			$cart,
+			$policy,
+			$events
+		);
+		$consultController->setTemplates( $templates );
+		$consultController->register();
+
+		$rest = new RestController(
 			$settings,
 			$sessions,
 			$grants,
@@ -145,7 +260,9 @@ final class Plugin {
 			$documents,
 			$templates,
 			$renderer
-		) )->register();
+		);
+		$rest->setConsult( $consultController );
+		$rest->register();
 
 		( new DownloadController( $sessions, $grants, $snapshots, $purchases, $policy, $documents, $events ) )->register();
 
@@ -161,8 +278,11 @@ final class Plugin {
 			$events,
 			$policy,
 			$orderEvents,
-			$purger
+			$purger,
+			$bookingCron
 		) )->register();
+
+		add_filter( 'cron_schedules', array( CronHandler::class, 'addSchedule' ) );
 
 		( new Notices( $gate ) )->register();
 
@@ -173,16 +293,17 @@ final class Plugin {
 		// Интеграция с EDD подключается на init: к этому моменту EDD точно загружен.
 		add_action(
 			'init',
-			static function () use ( $settings, $gate, $reader, $snapshots, $purchases, $policy, $events, $grants, $orderEvents ): void {
+			static function () use ( $settings, $gate, $reader, $snapshots, $purchases, $policy, $events, $grants, $orderEvents, $consultGate, $bookingRepo, $creditRepo, $bookingSync, $creditService ): void {
 				if ( ! EddGate::eddAvailable() ) {
 					return;
 				}
 
-				( new CheckoutGuard( $gate, $settings, $snapshots, $purchases, $policy ) )->register();
-				( new OrderBinder( $gate, $reader, $snapshots, $purchases, $events, $orderEvents ) )->register();
+				( new CheckoutGuard( $gate, $settings, $snapshots, $purchases, $policy, $consultGate, $bookingRepo, $creditRepo, $bookingSync, $creditService ) )->register();
+				( new OrderBinder( $gate, $reader, $snapshots, $purchases, $events, $orderEvents, $consultGate, $bookingRepo, $bookingSync ) )->register();
 				$orderEvents->register();
 				( new ReceiptIntegration( $settings, $policy, $purchases, $snapshots, $grants, $events ) )->register();
-				( new SuccessRedirect( $gate, $reader, $settings ) )->register();
+				( new SuccessRedirect( $gate, $reader, $settings, $consultGate ) )->register();
+				( new ConsultPriceFilter( $consultGate, $bookingRepo, $creditRepo, $snapshots ) )->register();
 			},
 			5
 		);
@@ -198,10 +319,7 @@ final class Plugin {
 	/** Обновление схемы БД и восстановление расписания (после замены ZIP без реактивации). */
 	public static function maintain(): void {
 		Schema::maybeUpgrade();
-
-		if ( ! wp_next_scheduled( CronHandler::HOOK ) ) {
-			wp_schedule_event( time() + 300, 'hourly', CronHandler::HOOK );
-		}
+		CronHandler::ensureScheduled();
 	}
 
 	/**
@@ -224,6 +342,8 @@ final class Plugin {
 			'today'            => Clock::today(),
 			'purchase_enabled' => $gate->ok(),
 			'privacy_url'      => (string) $settings->get( 'privacy_url', '' ),
+			'consult_enabled'  => self::$instance && isset( self::$instance->services['consultGate'] ) ? self::$instance->services['consultGate']->ok() : false,
+			'analytics_events' => ! empty( $settings->consultation()['analytics_events'] ),
 		);
 	}
 }

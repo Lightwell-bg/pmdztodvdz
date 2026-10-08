@@ -22,8 +22,10 @@ declare(strict_types=1);
 namespace Bginfo\PmzhDvzh\Http;
 
 use Bginfo\PmzhDvzh\Access\AccessPolicy;
+use Bginfo\PmzhDvzh\Access\AdminAccess;
 use Bginfo\PmzhDvzh\Access\GrantManager;
 use Bginfo\PmzhDvzh\Access\RequestContext;
+use Bginfo\PmzhDvzh\Access\ResultAccess;
 use Bginfo\PmzhDvzh\Access\SessionManager;
 use Bginfo\PmzhDvzh\Access\Tokens;
 use Bginfo\PmzhDvzh\Commerce\CartService;
@@ -89,6 +91,24 @@ final class RestController {
 	) {
 	}
 
+	private ?ConsultController $consult = null;
+
+	/** Подключает консультации: поле `consultations` в /state и /result. */
+	public function setConsult( ConsultController $consult ): void {
+		$this->consult = $consult;
+	}
+
+	/**
+	 * Записи на консультацию по снимку для /state и /result.
+	 *
+	 * @param array<string,mixed> $snapshot
+	 * @param list<int>|null      $allowedPurchaseIds null — владелец; список — только grant.
+	 * @return list<array<string,mixed>>
+	 */
+	private function consultations( array $snapshot, ?array $allowedPurchaseIds ): array {
+		return null === $this->consult ? array() : $this->consult->listForSnapshot( $snapshot, $allowedPurchaseIds );
+	}
+
 	public function register(): void {
 		add_action( 'rest_api_init', array( $this, 'registerRoutes' ) );
 		add_filter( 'rest_post_dispatch', array( $this, 'privateHeaders' ), 10, 3 );
@@ -150,6 +170,15 @@ final class RestController {
 	 * @return true|\WP_Error
 	 */
 	public function guard( \WP_REST_Request $request ) {
+		return self::originGuard( $request );
+	}
+
+	/**
+	 * Общая проверка метода и происхождения (используется и ConsultController).
+	 *
+	 * @return true|\WP_Error
+	 */
+	public static function originGuard( \WP_REST_Request $request ) {
 		$origin  = $request->get_header( 'origin' );
 		$referer = $request->get_header( 'referer' );
 		$home    = home_url();
@@ -211,11 +240,13 @@ final class RestController {
 
 		usort( $list, static fn( array $a, array $b ): int => (int) $b['id'] <=> (int) $a['id'] );
 
-		$out = array();
+		$out   = array();
+		$admin = AdminAccess::can();
 
 		foreach ( array_slice( $list, 0, 20 ) as $row ) {
 			$pub   = (string) $row['public_id'];
 			$best  = $this->bestPurchase( $this->purchases->bySnapshot( (int) $row['id'] ), null );
+			$best['payment'] = ResultAccess::decide( true, false, $admin, $best['payment'] );
 			$out[] = array(
 				'id'         => $pub,
 				'created_at' => $this->formatDate( (string) $row['created_at'] ),
@@ -223,6 +254,7 @@ final class RestController {
 				'preview'    => Json::decode( (string) ( $row['preview'] ?? '' ) ),
 				'payment'    => $best['payment'],
 				'csrf'       => $this->snapshotCsrf( $pub ),
+				'consultations' => $this->consultations( $row, null ),
 			);
 		}
 
@@ -254,6 +286,7 @@ final class RestController {
 				'status'     => (string) $row['status'],
 				'preview'    => Json::decode( (string) ( $row['preview'] ?? '' ) ),
 				'payment'    => $best['payment'],
+				'consultations' => $this->consultations( $row, $pids ),
 			);
 		}
 
@@ -274,6 +307,7 @@ final class RestController {
 				'purchase_enabled' => $this->gate->ok(),
 				'privacy_url'      => (string) $this->settings->get( 'privacy_url', '' ),
 				'today'            => Clock::today(),
+				'offers'           => $this->templates->offers(),
 			)
 		);
 	}
@@ -374,7 +408,7 @@ final class RestController {
 				$tpl['data'],
 				array_intersect_key( $settings, array_flip( array( 'fee_text', 'fee_verified_at', 'income_guide_text', 'income_verified_at' ) ) )
 			);
-			$preview     = $composer->preview( $result );
+			$preview     = $composer->preview( $result, $answers );
 			$instruction = $composer->instruction( $answers, $result, $tpl['version'] );
 
 			$snapshot = $this->snapshots->create(
@@ -486,10 +520,12 @@ final class RestController {
 		}
 
 		$best = $this->bestPurchase( $purchases, $allowed );
+		$mode = ResultAccess::decide( $isOwner, ! $isOwner, AdminAccess::can(), $best['payment'] );
 		$out  = array(
 			'id'      => $publicId,
 			'preview' => Json::decode( (string) $snapshot['preview'] ),
-			'payment' => $best['payment'],
+			'payment' => $mode,
+			'consultations' => $this->consultations( $snapshot, $isOwner ? null : (array) $allowed ),
 		);
 
 		if ( $isOwner ) {
@@ -529,6 +565,23 @@ final class RestController {
 					$out['document']['state'] = $res['state'];
 				}
 			}
+		}
+
+		if ( ResultAccess::ADMIN === $mode ) {
+			// Бесплатный доступ администратора: инструкция открыта без оплаты, PDF строится «на лету».
+			if ( ! SnapshotRepository::hashMatches( $snapshot ) ) {
+				$this->events->log( 'content_hash_mismatch', 0, 0, 'result_admin' );
+				$out['payment'] = AccessPolicy::MISMATCH;
+
+				return $this->json( $out );
+			}
+
+			$out['instruction_html'] = $this->renderer->render( Json::decode( (string) $snapshot['instruction'] ) );
+			$out['document']         = array(
+				'state'        => 'done',
+				'download_url' => add_query_arg( '_wpnonce', wp_create_nonce( 'bgdvzh_dl_' . $publicId ), $this->downloadUrl( $publicId ) ),
+				'admin'        => true,
+			);
 		}
 
 		return $this->json( $out );
@@ -625,13 +678,15 @@ final class RestController {
 
 		$body  = $this->body( $request );
 		$token = isset( $body['token'] ) && is_string( $body['token'] ) ? trim( $body['token'] ) : '';
-		$id    = Tokens::isWellFormed( $token ) ? $this->grants->exchange( $token ) : null;
+		$kind  = isset( $body['kind'] ) && is_string( $body['kind'] ) ? $body['kind'] : 'link';
+		$res   = Tokens::isWellFormed( $token ) ? $this->grants->exchangeFull( $token, $kind ) : null;
 
-		if ( null === $id ) {
+		if ( null === $res ) {
 			return $this->error( 404, 'invalid_link', 'Ссылка недействительна или устарела. Запросите новую на странице анкеты или в письме с заказом.' );
 		}
 
-		return $this->json( array( 'id' => $id ) );
+		// Для kind = booking дополнительно возвращается public_id записи.
+		return $this->json( null === $res['booking'] ? array( 'id' => $res['id'] ) : array( 'id' => $res['id'], 'booking' => $res['booking'] ) );
 	}
 
 	// ---------------------------------------------------------------------
@@ -707,12 +762,13 @@ final class RestController {
 		return 'pending' === $orderStatus && $created > 0 && ( $now - $created ) <= self::PENDING_WINDOW;
 	}
 
-	/** @return array{checkout:string,retry:string,send_link:string} */
+	/** @return array{checkout:string,retry:string,send_link:string,consult_hold:string} */
 	private function snapshotCsrf( string $publicId ): array {
 		return array(
 			'checkout'  => $this->sessions->csrfFor( 'checkout', $publicId ),
 			'retry'     => $this->sessions->csrfFor( 'retry', $publicId ),
 			'send_link' => $this->sessions->csrfFor( 'send_link', $publicId ),
+			'consult_hold' => $this->sessions->csrfFor( 'consult_hold', $publicId ),
 		);
 	}
 

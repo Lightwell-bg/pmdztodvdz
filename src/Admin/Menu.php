@@ -19,6 +19,8 @@ final class Menu {
 	private const CAPABILITY = 'manage_options';
 
 	private ?SubmissionView $view = null;
+	private ?ConsultationsPage $consultations = null;
+	private ?ConsultSettingsPage $consultSettings = null;
 
 	/** @param array<string,object> $services Plugin::instance()->services */
 	public function __construct( private array $services ) {
@@ -30,12 +32,18 @@ final class Menu {
 		add_action( 'admin_post_' . TemplatesPage::ACTION, array( $this->templatesPage(), 'handleSave' ) );
 		add_action( 'admin_post_' . SubmissionView::ACTION_REGEN, array( $this->submissionView(), 'handleRegen' ) );
 		add_action( 'admin_post_' . SubmissionView::ACTION_PURGE, array( $this->submissionView(), 'handlePurge' ) );
+		add_action( 'admin_post_' . SubmissionView::ACTION_DOWNLOAD, array( $this->submissionView(), 'handleDownload' ) );
+		add_action( 'admin_post_' . ConsultationsPage::ACTION, array( $this->consultationsPage(), 'handleAction' ) );
+		add_action( 'admin_post_' . ConsultSettingsPage::ACTION, array( $this->consultSettingsPage(), 'handleSave' ) );
+		$this->consultSettingsPage()->registerAssets();
 	}
 
 	public function addMenu(): void {
 		add_menu_page( 'ПМЖ → ДВЖ', 'ПМЖ → ДВЖ', self::CAPABILITY, SubmissionView::PAGE, array( $this, 'renderSubmissions' ), 'dashicons-clipboard', 58 );
 		add_submenu_page( SubmissionView::PAGE, 'Анкеты', 'Анкеты', self::CAPABILITY, SubmissionView::PAGE, array( $this, 'renderSubmissions' ) );
+		add_submenu_page( SubmissionView::PAGE, 'Консультации', 'Консультации', self::CAPABILITY, ConsultationsPage::SLUG, array( $this->consultationsPage(), 'render' ) );
 		add_submenu_page( SubmissionView::PAGE, 'Настройки', 'Настройки', self::CAPABILITY, SettingsPage::SLUG, array( $this->settingsPage(), 'render' ) );
+		add_submenu_page( SubmissionView::PAGE, 'Настройки консультаций', 'Настройки консультаций', self::CAPABILITY, ConsultSettingsPage::SLUG, array( $this->consultSettingsPage(), 'render' ) );
 		add_submenu_page( SubmissionView::PAGE, 'Шаблоны', 'Шаблоны', self::CAPABILITY, TemplatesPage::SLUG, array( $this->templatesPage(), 'render' ) );
 		add_submenu_page( SubmissionView::PAGE, 'Правила и источники', 'Правила и источники', self::CAPABILITY, RulesPage::SLUG, array( new RulesPage(), 'render' ) );
 	}
@@ -73,6 +81,22 @@ final class Menu {
 		return new SettingsPage( $this->services['settings'], $this->services['gate'] );
 	}
 
+	private function consultationsPage(): ConsultationsPage {
+		if ( null === $this->consultations ) {
+			$this->consultations = new ConsultationsPage( $this->services );
+		}
+
+		return $this->consultations;
+	}
+
+	private function consultSettingsPage(): ConsultSettingsPage {
+		if ( null === $this->consultSettings ) {
+			$this->consultSettings = new ConsultSettingsPage( $this->services['settings'], $this->services['consultGate'] );
+		}
+
+		return $this->consultSettings;
+	}
+
 	private function templatesPage(): TemplatesPage {
 		return new TemplatesPage( $this->services['templates'], $this->services['templateRepo'] );
 	}
@@ -87,7 +111,9 @@ final class Menu {
 				$this->services['policy'],
 				$this->services['templates'],
 				$this->services['settings'],
-				$this->services['purger']
+				$this->services['purger'],
+				$this->services['documents'],
+				$this->services['renderer']
 			);
 		}
 

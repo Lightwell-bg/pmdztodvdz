@@ -36,6 +36,23 @@ interface OrderReader {
 	/** Сумма всех возвратов по исходной позиции (положительное число). */
 	public function refundedTotalForItem( int $orderItemId ): float;
 
+	/** Валюта заказа ('' — неизвестна). */
+	public function orderCurrency( int $orderId ): string;
+
+	/**
+	 * Суммы исходной позиции (для расчёта зачёта).
+	 *
+	 * @return array{subtotal:float,discount:float,tax:float,total:float}|null
+	 */
+	public function itemAmounts( int $orderItemId ): ?array;
+
+	/**
+	 * Позиции возвратов по исходной позиции (суммы по модулю).
+	 *
+	 * @return list<array{subtotal:float,discount:float,total:float}>
+	 */
+	public function refundAmounts( int $orderItemId ): array;
+
 	/** @return list<string> Статусы заказа, при которых заказ считается оплаченным. */
 	public function paidOrderStatuses(): array;
 

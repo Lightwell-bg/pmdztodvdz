@@ -12,6 +12,7 @@ declare(strict_types=1);
 namespace Bginfo\PmzhDvzh\Cron;
 
 use Bginfo\PmzhDvzh\Access\AccessPolicy;
+use Bginfo\PmzhDvzh\Booking\BookingCron;
 use Bginfo\PmzhDvzh\Commerce\EddGate;
 use Bginfo\PmzhDvzh\Commerce\OrderEvents;
 use Bginfo\PmzhDvzh\Pdf\DocumentService;
@@ -20,6 +21,7 @@ use Bginfo\PmzhDvzh\Storage\DraftRepository;
 use Bginfo\PmzhDvzh\Storage\EventRepository;
 use Bginfo\PmzhDvzh\Storage\GrantRepository;
 use Bginfo\PmzhDvzh\Storage\PurchaseRepository;
+use Bginfo\PmzhDvzh\Storage\Schema;
 use Bginfo\PmzhDvzh\Storage\SessionRepository;
 use Bginfo\PmzhDvzh\Storage\SnapshotPurger;
 use Bginfo\PmzhDvzh\Storage\SnapshotRepository;
@@ -29,6 +31,36 @@ use Bginfo\PmzhDvzh\Support\Settings;
 final class CronHandler {
 
 	public const HOOK = 'bgdvzh_cron';
+
+	/** Расписание WP-Cron раз в 5 минут. */
+	public const SCHEDULE = 'bgdvzh_5min';
+
+	/** Опция с временем последнего ежечасного прохода. */
+	public const HOURLY_OPTION = 'bgdvzh_cron_hourly_at';
+
+	/**
+	 * Фильтр cron_schedules: добавляет интервал 5 минут.
+	 *
+	 * @param mixed $schedules
+	 * @return mixed
+	 */
+	public static function addSchedule( $schedules ) {
+		if ( is_array( $schedules ) ) {
+			$schedules[ self::SCHEDULE ] = array( 'interval' => 300, 'display' => 'Каждые 5 минут (BGINFO)' );
+		}
+
+		return $schedules;
+	}
+
+	/** Событие cron на расписании раз в 5 минут (переносит старое часовое). */
+	public static function ensureScheduled(): void {
+		if ( self::SCHEDULE === wp_get_schedule( self::HOOK ) ) {
+			return;
+		}
+
+		wp_clear_scheduled_hook( self::HOOK );
+		wp_schedule_event( time() + 120, self::SCHEDULE, self::HOOK );
+	}
 
 	public function __construct(
 		private Settings $settings,
@@ -42,7 +74,8 @@ final class CronHandler {
 		private EventRepository $events,
 		private AccessPolicy $policy,
 		private OrderEvents $orderEvents,
-		private SnapshotPurger $purger
+		private SnapshotPurger $purger,
+		private ?BookingCron $bookingCron = null
 	) {
 	}
 
@@ -51,8 +84,34 @@ final class CronHandler {
 		add_action( OrderEvents::GENERATE_HOOK, array( $this, 'generate' ), 10, 1 );
 	}
 
-	/** Ежечасный проход. */
+	/**
+	 * Проход по расписанию `bgdvzh_5min`: консультации — каждый раз,
+	 * остальное (документы, сверка, хранение) — не чаще раза в час.
+	 */
 	public function run(): void {
+		$now = Clock::timestamp();
+
+		// Обновление схемы БД не ждёт захода в админку: cron идёт каждые 5 минут.
+		Schema::maybeUpgrade();
+
+		if ( null !== $this->bookingCron && Schema::ready() ) {
+			try {
+				$this->bookingCron->tick( $now );
+			} catch ( \Throwable $e ) {
+				$this->events->log( 'consult_tick_failed', 0, 0, get_class( $e ) );
+			}
+		}
+
+		if ( $now - (int) get_option( self::HOURLY_OPTION, 0 ) < 3300 ) {
+			return;
+		}
+
+		update_option( self::HOURLY_OPTION, $now, false );
+		$this->hourly();
+	}
+
+	/** Ежечасная часть прохода. */
+	private function hourly(): void {
 		$this->documentRepo->failExhausted();
 		$this->processDocuments( 10 );
 

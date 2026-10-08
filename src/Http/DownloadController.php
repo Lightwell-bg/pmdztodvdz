@@ -15,6 +15,7 @@ declare(strict_types=1);
 namespace Bginfo\PmzhDvzh\Http;
 
 use Bginfo\PmzhDvzh\Access\AccessPolicy;
+use Bginfo\PmzhDvzh\Access\AdminAccess;
 use Bginfo\PmzhDvzh\Access\GrantManager;
 use Bginfo\PmzhDvzh\Access\RequestContext;
 use Bginfo\PmzhDvzh\Access\SessionManager;
@@ -70,6 +71,14 @@ final class DownloadController {
 		}
 
 		$purchases = $this->purchases->bySnapshot( (int) $snapshot['id'] );
+
+		// Админский обход только с одноразовой ссылкой (nonce); иначе обычные проверки владельца и оплаты.
+		$nonce = isset( $_GET['_wpnonce'] ) && is_string( $_GET['_wpnonce'] ) ? sanitize_text_field( wp_unslash( $_GET['_wpnonce'] ) ) : ''; // phpcs:ignore WordPress.Security.NonceVerification
+
+		if ( '' !== $nonce && AdminAccess::can() && false !== wp_verify_nonce( $nonce, 'bgdvzh_dl_' . $publicId ) ) {
+			$this->serveAdmin( $snapshot, $purchases );
+		}
+
 		$ctx       = new RequestContext( $this->sessions->sessionId(), (int) get_current_user_id(), $this->grants->currentPurchaseIds() );
 		$ctxOwner  = new RequestContext( $ctx->sessionId, $ctx->userId, array() );
 		$isOwner   = AccessPolicy::isOwner( $snapshot, null, $ctxOwner->toArray() );
@@ -108,7 +117,7 @@ final class DownloadController {
 		$res = $this->documents->ensure( $paid );
 
 		if ( 'done' === $res['state'] && is_string( $res['pdf'] ) ) {
-			$this->send( $res['pdf'], $snapshot );
+			self::stream( $res['pdf'], $snapshot );
 		}
 
 		if ( 'failed' === $res['state'] ) {
@@ -120,9 +129,57 @@ final class DownloadController {
 	}
 
 	/**
+	 * Бесплатная выдача PDF администратору: любой неочищенный снимок с верным
+	 * content_hash, независимо от владельца и оплаты. Есть оплаченная покупка с
+	 * готовым документом — отдаётся он, иначе PDF строится «на лету» без хранения.
+	 *
+	 * @param array<string,mixed>       $snapshot
+	 * @param list<array<string,mixed>> $purchases
+	 */
+	private function serveAdmin( array $snapshot, array $purchases ): never {
+		if ( ! empty( $snapshot['purged_at'] ) ) {
+			$this->page( 410, 'Данные этой анкеты удалены.' );
+		}
+
+		if ( ! SnapshotRepository::hashMatches( $snapshot ) ) {
+			$this->events->log( 'content_hash_mismatch', 0, 0, 'download_admin' );
+			$this->page( 500, 'Документ временно недоступен: контрольная сумма снимка не совпадает.' );
+		}
+
+		$pdf = null;
+		$pid = 0;
+
+		foreach ( $purchases as $p ) {
+			if ( ! $this->policy->paymentState( $p )['access'] || 'done' !== $this->documents->state( (int) $p['id'] ) ) {
+				continue;
+			}
+
+			$res = $this->documents->ensure( $p );
+
+			if ( 'done' === $res['state'] && is_string( $res['pdf'] ) ) {
+				$pdf = $res['pdf'];
+				$pid = (int) $p['id'];
+				break;
+			}
+		}
+
+		if ( null === $pdf ) {
+			try {
+				$pdf = $this->documents->renderForSnapshot( $snapshot );
+			} catch ( \Throwable $e ) {
+				$this->events->log( 'admin_download_failed', 0, 0, get_class( $e ) );
+				$this->page( 500, 'Не удалось подготовить PDF. Инструкция доступна на странице анкеты.' );
+			}
+		}
+
+		$this->events->log( 'admin_download', $pid, 0, 'user ' . (int) get_current_user_id() . ', snapshot …' . substr( (string) $snapshot['public_id'], -8 ) );
+		self::stream( $pdf, $snapshot );
+	}
+
+	/**
 	 * @param array<string,mixed> $snapshot
 	 */
-	private function send( string $pdf, array $snapshot ): never {
+	public static function stream( string $pdf, array $snapshot ): never {
 		$ts   = Clock::toTimestamp( (string) $snapshot['created_at'] );
 		$date = function_exists( 'wp_date' ) && $ts > 0 ? (string) wp_date( 'Y-m-d', $ts ) : gmdate( 'Y-m-d' );
 

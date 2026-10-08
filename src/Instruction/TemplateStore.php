@@ -42,6 +42,25 @@ final class TemplateStore {
 	}
 
 	/**
+	 * Тексты карточек выбора (ключ `offers` текущего набора) для публичных
+	 * ответов: только строки известных ключей.
+	 *
+	 * @return array<string,string>
+	 */
+	public function offers(): array {
+		$defaults = (array) ( DefaultTemplates::get()['offers'] ?? array() );
+		$stored   = (array) ( $this->current()['data']['offers'] ?? array() );
+		$out      = array();
+
+		foreach ( $defaults as $key => $default ) {
+			$value        = $stored[ $key ] ?? $default;
+			$out[ $key ]  = is_string( $value ) && '' !== $value ? $value : (string) $default;
+		}
+
+		return $out;
+	}
+
+	/**
 	 * Набор конкретной версии (null, если такой нет).
 	 *
 	 * @return array{version:string,data:array<string,mixed>}|null

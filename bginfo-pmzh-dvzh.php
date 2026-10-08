@@ -2,7 +2,7 @@
 /**
  * Plugin Name:       BGINFO — Переход ПМЖ → ДВЖ
  * Description:       Анкета для граждан третьих стран с ПМЖ в Болгарии: предварительная оценка условий перехода на статус долгосрочно пребывающего (ДВЖ) и платная персональная инструкция (оплата через Easy Digital Downloads).
- * Version:           0.1.1
+ * Version:           0.2.0
  * Requires at least: 6.4
  * Requires PHP:      8.1
  * Author:            BGINFO
@@ -20,7 +20,7 @@ if ( ! defined( 'ABSPATH' ) ) {
 	exit;
 }
 
-define( 'BGINFO_PMZH_DVZH_VERSION', '0.1.1' );
+define( 'BGINFO_PMZH_DVZH_VERSION', '0.2.0' );
 define( 'BGINFO_PMZH_DVZH_FILE', __FILE__ );
 define( 'BGINFO_PMZH_DVZH_DIR', plugin_dir_path( __FILE__ ) );
 define( 'BGINFO_PMZH_DVZH_URL', plugin_dir_url( __FILE__ ) );

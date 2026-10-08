@@ -10,6 +10,8 @@
 - Лог PHP/WordPress: `wp-content/debug.log` (`WP_DEBUG` и `WP_DEBUG_LOG` включены, `WP_DEBUG_DISPLAY` выключен).
 - Инструменты проекта: `.tools/` (в `.gitignore`): `composer.phar`, `phpunit.phar`, `strauss.phar`, `php-scoper.phar`, `wp-cli.phar`, `start-wp.sh`, `wp.sh`.
 
+Каталог плагина в стенде может быть junction на проект (правки видны сразу) или установленной копией из ZIP (`dist/_N...zip`). Проверить: `dir wp-content\plugins` (у junction пометка `<JUNCTION>`). Безопасно переключить: остановить сервер (`bash .tools/start-wp.sh stop`), удалить только ссылку (`rmdir wp-content\plugins\bginfo-pmzh-dvzh` для junction - содержимое проекта не удаляется; обычную папку-копию переименовать, а не стирать), затем создать junction `mklink /J` на корень проекта либо распаковать ZIP в `wp-content/plugins/`, и запустить сервер. Не использовать `rm -rf` на junction: удалится содержимое проекта.
+
 ## Доступ
 
 - Сайт: http://127.0.0.1:8899/
@@ -42,3 +44,13 @@ curl -s -o /dev/null -w "%{http_code}\n" http://127.0.0.1:8899/    # ожида�
 ```bash
 bash .tools/wp.sh eval 'foreach(glob(WP_PLUGIN_DIR."/easy-digital-downloads/src/Database/Tables/*.php") as $f){$c="EDD\Database\Tables\\".basename($f,".php"); if(!class_exists($c)||(new ReflectionClass($c))->isAbstract()) continue; $t=new $c(); if(!$t->exists()) $t->install();}'
 ```
+
+## MariaDB для тестов конкурентности
+
+Портативный MariaDB 11.4.5 (ZIP, без установки в систему), порт 3407, InnoDB, REPEATABLE-READ.
+
+- DSN: `mysql:host=127.0.0.1;port=3407;dbname=bgdvzh_test;charset=utf8mb4`, пользователь `root`, пароль `root`.
+- Запуск: `bash .tools/mariadb.sh start`
+- Остановка: `bash .tools/mariadb.sh stop`
+- Проверка: `bash .tools/mariadb.sh status` (ответ `mysqld is alive`).
+- Файлы сервера лежат в scratchpad сессии (пути в `.tools/mariadb.sh`); при очистке temp нужно скачать ZIP заново и выполнить `mariadb-install-db`.

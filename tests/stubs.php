@@ -23,6 +23,12 @@ foreach ( array(
 	}
 }
 
+foreach ( array( 'ARRAY_A', 'ARRAY_N', 'OBJECT' ) as $bgdvzh_const ) {
+	if ( ! defined( $bgdvzh_const ) ) {
+		define( $bgdvzh_const, $bgdvzh_const );
+	}
+}
+
 if ( ! function_exists( 'esc_html' ) ) {
 	function esc_html( $text ): string {
 		return htmlspecialchars( (string) $text, ENT_QUOTES | ENT_SUBSTITUTE, 'UTF-8' );
@@ -52,5 +58,53 @@ if ( ! function_exists( 'esc_url' ) ) {
 if ( ! function_exists( 'wp_json_encode' ) ) {
 	function wp_json_encode( $value, int $flags = 0 ) {
 		return json_encode( $value, $flags );
+	}
+}
+
+/*
+ * Управляемые заглушки пользователя и фильтров (для тестов AdminAccess):
+ * $GLOBALS['bgdvzh_test_user'] — id пользователя, ['bgdvzh_test_caps'] — список
+ * его возможностей, ['bgdvzh_test_filters'] — подмена значений фильтров по имени.
+ */
+if ( ! function_exists( 'get_current_user_id' ) ) {
+	function get_current_user_id(): int {
+		return (int) ( $GLOBALS['bgdvzh_test_user'] ?? 0 );
+	}
+}
+
+if ( ! function_exists( 'current_user_can' ) ) {
+	function current_user_can( $capability ): bool {
+		// Заглушка намеренно не смотрит на id пользователя: проверка гостя — дело AdminAccess.
+		return in_array( $capability, (array) ( $GLOBALS['bgdvzh_test_caps'] ?? array() ), true );
+	}
+}
+
+if ( ! function_exists( 'apply_filters' ) ) {
+	function apply_filters( $hook, $value ) {
+		return array_key_exists( $hook, (array) ( $GLOBALS['bgdvzh_test_filters'] ?? array() ) ) ? $GLOBALS['bgdvzh_test_filters'][ $hook ] : $value;
+	}
+}
+
+/*
+ * Опции и соль для тестов: $GLOBALS['bgdvzh_test_options'][имя] подменяет get_option().
+ */
+if ( ! function_exists( 'get_option' ) ) {
+	function get_option( $name, $default = false ) {
+		return array_key_exists( $name, (array) ( $GLOBALS['bgdvzh_test_options'] ?? array() ) ) ? $GLOBALS['bgdvzh_test_options'][ $name ] : $default;
+	}
+}
+
+if ( ! function_exists( 'wp_salt' ) ) {
+	function wp_salt( $scheme = 'auth' ): string {
+		return 'test-salt-' . $scheme;
+	}
+}
+
+/*
+ * Временный файл для вложений писем (WordPress создаёт его в каталоге temp).
+ */
+if ( ! function_exists( 'wp_tempnam' ) ) {
+	function wp_tempnam( $filename = '', $dir = '' ) {
+		return tempnam( sys_get_temp_dir(), 'bgd' );
 	}
 }

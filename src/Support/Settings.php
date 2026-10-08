@@ -38,7 +38,26 @@ final class Settings {
 			'income_verified_at'    => '',
 			'income_guide_text'     => '',
 			'delete_on_uninstall'   => false,
+			'consult'               => ConsultSettings::defaults(),
 		);
+	}
+
+	/**
+	 * Настройки консультаций с дефолтами (ключ `consult`, см. ConsultSettings).
+	 *
+	 * @return array<string,mixed>
+	 */
+	public function consultation(): array {
+		return ConsultSettings::merge( $this->all()['consult'] ?? array() );
+	}
+
+	/**
+	 * Ошибки конфигурации консультаций для админки и ConsultGate.
+	 *
+	 * @return list<string>
+	 */
+	public function consultationErrors(): array {
+		return ConsultSettings::errors( $this->consultation() );
 	}
 
 	/**
@@ -174,6 +193,10 @@ final class Settings {
 		if ( array_key_exists( 'delete_on_uninstall', $input ) ) {
 			$v                          = $input['delete_on_uninstall'];
 			$out['delete_on_uninstall'] = true === $v || '1' === $v || 1 === $v || 'on' === $v || 'yes' === $v;
+		}
+
+		if ( array_key_exists( 'consult', $input ) && is_array( $input['consult'] ) ) {
+			$out['consult'] = ConsultSettings::sanitize( $input['consult'], ConsultSettings::merge( $base['consult'] ?? array() ) );
 		}
 
 		return $out;

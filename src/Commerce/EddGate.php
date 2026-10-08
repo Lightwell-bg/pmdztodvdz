@@ -31,6 +31,21 @@ final class EddGate {
 		return defined( 'EDD_VERSION' ) && version_compare( (string) EDD_VERSION, self::MIN_VERSION, '>=' );
 	}
 
+	/**
+	 * Товар продаётся анонимному покупателю: опубликован и EDD разрешает
+	 * покупку. Статус проверяется явно, потому что EDD_Download::can_purchase()
+	 * для пользователя с правом редактирования пропускает и черновик.
+	 */
+	public static function purchasable( int $downloadId ): bool {
+		if ( $downloadId <= 0 || ! function_exists( 'get_post_status' ) || 'publish' !== get_post_status( $downloadId ) || ! class_exists( '\\EDD_Download' ) ) {
+			return false;
+		}
+
+		$download = new \EDD_Download( $downloadId );
+
+		return (bool) $download->can_purchase();
+	}
+
 	public function downloadId(): int {
 		return (int) $this->settings->get( 'download_id', 0 );
 	}
@@ -68,6 +83,10 @@ final class EddGate {
 
 		if ( ! $post instanceof \WP_Post || 'download' !== $post->post_type || 'trash' === $post->post_status ) {
 			return 'Выбранный в настройках товар EDD не найден или удалён. Выберите товар заново.';
+		}
+
+		if ( ! self::purchasable( $id ) ) {
+			return 'Товар EDD для персональной инструкции не опубликован или недоступен для покупки (черновик не годится). Опубликуйте товар.';
 		}
 
 		if ( $this->isVariable() ) {

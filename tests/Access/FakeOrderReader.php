@@ -59,6 +59,33 @@ final class FakeOrderReader implements OrderReader {
 		return $this->refunds[ $orderItemId ] ?? 0.0;
 	}
 
+	/** @var array<int,string> Валюта по id заказа (по умолчанию EUR). */
+	public array $currencies = array();
+
+	/** @var array<int,array{subtotal:float,discount:float,tax:float,total:float}> */
+	public array $amounts = array();
+
+	/** @var array<int,list<array{subtotal:float,discount:float,total:float}>> */
+	public array $refundItems = array();
+
+	public function orderCurrency( int $orderId ): string {
+		return $this->currencies[ $orderId ] ?? 'EUR';
+	}
+
+	public function itemAmounts( int $orderItemId ): ?array {
+		if ( isset( $this->amounts[ $orderItemId ] ) ) {
+			return $this->amounts[ $orderItemId ];
+		}
+
+		$i = $this->items[ $orderItemId ] ?? null;
+
+		return null === $i ? null : array( 'subtotal' => (float) $i['total'], 'discount' => 0.0, 'tax' => 0.0, 'total' => (float) $i['total'] );
+	}
+
+	public function refundAmounts( int $orderItemId ): array {
+		return $this->refundItems[ $orderItemId ] ?? array();
+	}
+
 	public function paidOrderStatuses(): array {
 		return array( 'complete', 'partially_refunded' );
 	}

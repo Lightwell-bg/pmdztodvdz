@@ -64,6 +64,7 @@
 | `POST /submit` | сессия + csrf | `Validator`: при ошибках 422 `{errors: {path: msg}}`. Иначе `Evaluator` → `Composer::preview` + `Composer::instruction` → новый неизменяемый снимок. Возвращает **только** preview и public_id. Черновик остаётся, его можно править и отправлять заново: каждый раз создаётся новый снимок |
 | `POST /checkout` | владелец по сессии/пользователю + csrf(scope=public_id) | см. §6. Возвращает `{redirect: edd_get_checkout_uri()}` либо 409 `already_paid` / `in_progress` |
 | `GET /result?id=` | владелец (сессия, пользователь или grant этой покупки) | preview. Если `AccessPolicy::paymentState` = paid — дополнительно `instruction_html` (`HtmlRenderer`, экранированный) и `document: {state, download_url}`. Иначе `payment: pending/failed/refunded/...` без платного текста |
+| `GET /result?id=` (администратор) | владелец по сессии/пользователю + `AdminAccess::can()`, нет действующей оплаты | `payment: 'admin'`, `instruction_html` (после проверок purged и `content_hash`), `document: {state:'done', download_url, admin:true}`. Только для владельца по сессии/пользователю: доступ лишь по grant `admin` не даёт. Оплаченная покупка главнее (`paid`) |
 | `POST /retry-document` | владелец + csrf | сбрасывает failed-документ (cooldown 60 с) и запускает генерацию |
 | `POST /send-link` | владелец по сессии/пользователю + csrf | выпускает новую ссылку `kind='link'` и отправляет её `wp_mail` на email заказа EDD; email в ответе не раскрывается |
 | `POST /grant` | любой, sameOrigin, лимит по IP | `{token}` из фрагмента → проверка hash, срока и revoked → новая grant-cookie того же scope → `{id: public_id}` |
@@ -73,6 +74,8 @@
 2. `DocumentService::ensure()`.
 3. Ответ: `Content-Type: application/pdf`, `Content-Disposition: attachment; filename="instrukciya-dvzh-<дата>.pdf"`, `no-store`, `noindex`, `no-referrer`, `nosniff`.
 4. Без доступа — 403/404 с понятной страницей без деталей.
+
+**Скачивание администратором**: обход действует только при `AdminAccess::can()` и верном nonce `bgdvzh_dl_<public_id>` (`_wpnonce` в `download_url` для `payment: 'admin'`); без nonce — обычные проверки владельца и оплаты. Разрешена любая неочищенная анкета с верным `content_hash`, независимо от владельца и оплаты. Есть оплаченная покупка с готовым документом — отдаётся он; иначе PDF строится из `snapshot.instruction` (`DocumentService::renderForSnapshot`, без хранения и строк документов). Заголовки те же. Событие `admin_download` (purchase_id 0 или id покупки; detail `user <id>, snapshot …<8 символов>`), токены и ответы не логируются.
 
 ## 5. Снимок
 
@@ -191,6 +194,7 @@ WHERE purchase_id=:p
   - Полные ответы, токены и ссылки в списке не показываются.
 - **Просмотр анкеты**: ответы (таблица), findings, preview, события.
   - Действия: «Сгенерировать PDF заново» (тот же снимок, тот же HTML) и «Удалить данные анкеты».
+  - Для тех, у кого `AdminAccess::can()`: кнопка «Скачать PDF (без оплаты)» (admin-post `bgdvzh_admin_download`, nonce `bgdvzh_admin_download_<id>` + проверка права, потоковая выдача) и сворачиваемый `<details>` «Инструкция» (`HtmlRenderer::render`). В блоке предпросмотра показывается «Разбор по разделам».
   - Удаление обнуляет answers, result, preview, instruction и документ, отзывает grants и выставляет `purged_at`. Строки purchases и заказ EDD остаются.
 
 ## 11. Хранение и удаление
@@ -239,6 +243,8 @@ WHERE purchase_id=:p
 - **Покупки** (B4): `Schema::DB_VERSION = '2'`, `UNIQUE KEY order_snapshot (order_id, snapshot_id)` рядом с `order_item_id`. Перед `dbDelta` `Schema::dedupePurchases()` удаляет дубли пары (остаётся наименьший `id`, grants и документы дублей удаляются, событие `purchase_deduplicated`). `PurchaseRepository::upsertForOrderSnapshot`: обычный `INSERT`, при дубле любого ключа — `UPDATE` строки по `(order_id, snapshot_id)`; ошибка записи → событие `bind_failed` и `null`. Работает на MySQL и на SQLite-интеграции (проверено на стенде).
 - **Очистка и генерация** (B5): `SnapshotPurger::purge` сначала атомарно ставит `purged_at` (`SnapshotRepository::markPurged`), затем обнуляет данные (`wipeData`), затем удаляет документы и файлы. `DocumentService::ensure` не работает для очищенных снимков; после `finish` снимок перечитывается — если очищен, строка документа и файл удаляются; при потере блокировки записанный файл удаляется (если на него не ссылается ни одна строка документа).
 - **Удаление при деинсталляции** (B6): `uninstall.php` перед `DROP TABLE` удаляет файлы PDF из проверенного `BGINFO_PMZH_DVZH_PRIVATE_DIR` (только имена `<sha256>.pdf`).
+- **Бесплатный разбор (0.1.2)**: `Composer::preview( $result, $answers )` добавляет `analysis` `{period, facts:[{label,value}], sections:[{id,title,status,lines}]}` (7 разделов: residence, trips, special, housing, health, funds, documents; status — `ok|check|obstacle|info`, худшая severity findings раздела). В строки попадают только факты из ответов, цифры расчёта и `short`-тексты; `detail`, `action`, `question`, документы, план и вопросы остаются в платной инструкции (тесты `ComposerTest`, `PreviewIsolationTest`). В старых снимках `analysis` нет: фронт показывает список `reasons`. Контракт `/submit`, `/result`, `/state` не менялся: `analysis` лежит внутри `preview`.
+- **Доступ администратора (0.1.2)**: `Access\AdminAccess::can()` = `get_current_user_id() > 0` и `current_user_can( apply_filters( 'bgdvzh_free_access_capability', 'manage_options' ) )`. `Access\ResultAccess::decide( owner, grantOnly, admin, paymentState )` — чистое решение: `paid` главнее, иначе `admin` при `admin && owner && !grantOnly`, иначе исходное состояние. Используется в `/result` и в `payment` каждого снимка в `/state` (для `granted` не применяется). Фронт при `payment = 'admin'` показывает инструкцию с пометкой, ссылку на PDF, без предложения и без «Отправить ссылку на email заказа». Фильтр `bgdvzh_free_access_capability` меняет требуемое право.
 - **Статус `processing`** у заказа и `on_hold` дают `in_progress` в `/checkout`; остальные неоплаченные статусы повторную попытку не блокируют.
 
 Хуки EDD, реально регистрируемые (только при `EddGate::eddAvailable()`, на `init` с приоритетом 5):

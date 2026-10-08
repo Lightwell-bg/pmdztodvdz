@@ -13,6 +13,7 @@ declare(strict_types=1);
 
 namespace Bginfo\PmzhDvzh\Access;
 
+use Bginfo\PmzhDvzh\Storage\BookingRepository;
 use Bginfo\PmzhDvzh\Storage\GrantRepository;
 use Bginfo\PmzhDvzh\Storage\PurchaseRepository;
 use Bginfo\PmzhDvzh\Storage\SnapshotRepository;
@@ -26,6 +27,8 @@ final class GrantManager {
 
 	/** @var list<int>|null */
 	private ?array $purchaseIds = null;
+
+	private ?BookingRepository $bookings = null;
 
 	public function __construct(
 		private GrantRepository $grants,
@@ -48,13 +51,49 @@ final class GrantManager {
 		return $this->grants->issue( $purchase, GrantRepository::KIND_LINK, $this->ttlDays() );
 	}
 
+	/** Подключает репозиторий записей (для grant kind = booking). */
+	public function withBookings( BookingRepository $bookings ): void {
+		$this->bookings = $bookings;
+	}
+
+	/**
+	 * Токен управления записью для письма-подтверждения (kind = 'booking').
+	 * Срок не короче 60 дней: ссылка должна пережить дату консультации.
+	 * Открывает только эту запись (/consult/booking, /reschedule, /ics) и
+	 * инструкцию её снимка.
+	 *
+	 * @param array<string,mixed> $purchase Покупка консультации (kind = consultation).
+	 */
+	public function issueBookingLink( array $purchase ): ?string {
+		if ( 'consultation' !== (string) ( $purchase['kind'] ?? '' ) ) {
+			return null;
+		}
+
+		return $this->grants->issue( $purchase, GrantRepository::KIND_BOOKING, max( 60, $this->ttlDays() ) );
+	}
+
 	/**
 	 * Обмен токена ссылки на grant-cookie.
 	 *
 	 * @return string|null public_id снимка либо null (токен неверен/просрочен/отозван).
 	 */
 	public function exchange( string $rawToken ): ?string {
-		$link = $this->grants->findValid( trim( $rawToken ), GrantRepository::KIND_LINK );
+		$res = $this->exchangeFull( $rawToken, GrantRepository::KIND_LINK );
+
+		return null === $res ? null : $res['id'];
+	}
+
+	/**
+	 * Обмен токена на grant-cookie с указанием вида ('link' или 'booking').
+	 *
+	 * @return array{id:string,booking:?string}|null id — public_id снимка; booking — public_id записи (для kind = booking).
+	 */
+	public function exchangeFull( string $rawToken, string $kind = GrantRepository::KIND_LINK ): ?array {
+		if ( ! in_array( $kind, array( GrantRepository::KIND_LINK, GrantRepository::KIND_BOOKING ), true ) ) {
+			return null;
+		}
+
+		$link = $this->grants->findValid( trim( $rawToken ), $kind );
 
 		if ( null === $link ) {
 			return null;
@@ -64,6 +103,18 @@ final class GrantManager {
 
 		if ( null === $purchase ) {
 			return null;
+		}
+
+		$bookingPublic = null;
+
+		if ( GrantRepository::KIND_BOOKING === $kind ) {
+			$booking = null === $this->bookings || 'consultation' !== (string) ( $purchase['kind'] ?? '' ) ? null : $this->bookings->get( (int) $purchase['booking_id'] );
+
+			if ( null === $booking || (int) $booking['snapshot_id'] !== (int) $purchase['snapshot_id'] ) {
+				return null;
+			}
+
+			$bookingPublic = (string) $booking['public_id'];
 		}
 
 		$snapshot = $this->snapshots->findById( (int) $purchase['snapshot_id'] );
@@ -78,7 +129,10 @@ final class GrantManager {
 			return null;
 		}
 
-		$this->grants->markUsed( (int) $link['id'] );
+		// Ссылка управления записью многоразовая (срок — на дату консультации), ссылка на инструкцию — по токену.
+		if ( GrantRepository::KIND_BOOKING !== $kind ) {
+			$this->grants->markUsed( (int) $link['id'] );
+		}
 
 		$tokens   = $this->cookieTokens();
 		$tokens[] = $cookieToken;
@@ -87,7 +141,17 @@ final class GrantManager {
 		Cookies::set( self::COOKIE, implode( '.', $tokens ), time() + $this->ttlDays() * DAY_IN_SECONDS );
 		$this->purchaseIds = null;
 
-		return (string) $snapshot['public_id'];
+		return array( 'id' => (string) $snapshot['public_id'], 'booking' => $bookingPublic );
+	}
+
+	/**
+	 * Открывает ли действующий grant-cookie запись: покупка консультации этой
+	 * записи среди grant-покупок запроса.
+	 *
+	 * @param array<string,mixed> $booking
+	 */
+	public function opensBooking( array $booking ): bool {
+		return (int) $booking['purchase_id'] > 0 && in_array( (int) $booking['purchase_id'], $this->currentPurchaseIds(), true );
 	}
 
 	/**

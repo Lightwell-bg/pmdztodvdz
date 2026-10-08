@@ -15,7 +15,7 @@ use Bginfo\PmzhDvzh\Support\Settings;
 
 final class SuccessRedirect {
 
-	public function __construct( private EddGate $gate, private OrderReader $reader, private Settings $settings ) {
+	public function __construct( private EddGate $gate, private OrderReader $reader, private Settings $settings, private ?ConsultGate $consult = null ) {
 	}
 
 	public function register(): void {
@@ -52,14 +52,18 @@ final class SuccessRedirect {
 		}
 
 		$download = $this->gate->downloadId();
+		$consult  = null === $this->consult ? 0 : $this->consult->downloadId();
 		$items    = $this->reader->orderItems( (int) $order->id );
 
-		if ( $download <= 0 || empty( $items ) ) {
+		if ( ( $download <= 0 && $consult <= 0 ) || empty( $items ) ) {
 			return;
 		}
 
+		// Заказ целиком из наших товаров (инструкция и/или консультация).
 		foreach ( $items as $item ) {
-			if ( (int) $item['product_id'] !== $download ) {
+			$product = (int) $item['product_id'];
+
+			if ( $product !== $download && $product !== $consult ) {
 				return;
 			}
 		}

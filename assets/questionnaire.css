@@ -1,0 +1,244 @@
+/* BGINFO — Переход ПМЖ → ДВЖ: стили анкеты. Все правила под .bgdvzh. */
+.bgdvzh {
+	font: inherit;
+	color: inherit;
+	/* В блочных темах — ширина колонки статьи, иначе 760px. */
+	max-width: var(--wp--style--global--content-size, 760px);
+	margin: 1.5em auto;
+	box-sizing: border-box;
+	line-height: 1.5;
+}
+.bgdvzh *, .bgdvzh *::before, .bgdvzh *::after { box-sizing: border-box; }
+.bgdvzh [hidden] { display: none !important; }
+
+.bgdvzh :focus-visible {
+	outline: 3px solid #1a56db;
+	outline-offset: 2px;
+}
+.bgdvzh .bgdvzh-heading { margin: 0 0 .75em; font: inherit; font-size: 1.35em; font-weight: 700; }
+.bgdvzh .bgdvzh-heading:focus { outline: none; }
+.bgdvzh .bgdvzh-subheading { margin: 1.25em 0 .5em; font: inherit; font-size: 1.1em; font-weight: 700; }
+.bgdvzh p { margin: 0 0 .85em; }
+
+/* Прогресс */
+.bgdvzh .bgdvzh-progress { margin-bottom: 1em; }
+.bgdvzh .bgdvzh-progress-text { margin: 0 0 .35em; font-weight: 600; }
+.bgdvzh progress { width: 100%; height: 10px; accent-color: #1a56db; }
+.bgdvzh .bgdvzh-window { font-weight: 600; }
+
+/* Поля */
+.bgdvzh .bgdvzh-field, .bgdvzh .bgdvzh-fieldset { margin: 0 0 1.1em; }
+.bgdvzh .bgdvzh-field > label { display: block; font-weight: 600; margin-bottom: .3em; }
+.bgdvzh .bgdvzh-fieldset { border: 0; padding: 0; min-width: 0; }
+.bgdvzh .bgdvzh-fieldset > legend { font-weight: 600; padding: 0; margin-bottom: .4em; }
+.bgdvzh .bgdvzh-input {
+	display: block;
+	width: 100%;
+	min-height: 44px;
+	padding: .5em .7em;
+	font: inherit;
+	color: inherit;
+	background: #fff;
+	border: 1px solid #6b7280;
+	border-radius: 6px;
+}
+.bgdvzh .bgdvzh-input[aria-invalid="true"],
+.bgdvzh .bgdvzh-fieldset[aria-invalid="true"] { border-color: #b42318; }
+.bgdvzh .bgdvzh-fieldset[aria-invalid="true"] { border: 2px solid #b42318; border-radius: 6px; padding: .5em; }
+.bgdvzh .bgdvzh-choice {
+	display: flex;
+	align-items: flex-start;
+	gap: .6em;
+	min-height: 44px;
+	padding: .25em 0;
+}
+.bgdvzh .bgdvzh-choice input { width: 22px; height: 22px; margin: .6em 0 0; flex: 0 0 auto; }
+.bgdvzh .bgdvzh-choice label { flex: 1 1 auto; padding: .55em 0; font-weight: 400; cursor: pointer; }
+.bgdvzh .bgdvzh-hint { color: #4b5563; font-size: .92em; margin: 0 0 .4em; }
+.bgdvzh .bgdvzh-intro { color: #374151; }
+.bgdvzh .bgdvzh-error { color: #b42318; font-weight: 600; font-size: .95em; margin: .3em 0 0; }
+.bgdvzh .bgdvzh-error-summary,
+.bgdvzh .bgdvzh-warnings,
+.bgdvzh .bgdvzh-notice {
+	margin: 0 0 1em;
+	padding: .8em 1em;
+	border-radius: 6px;
+	border: 1px solid;
+}
+.bgdvzh .bgdvzh-error-summary { background: #fef3f2; border-color: #b42318; color: #7a1b13; }
+.bgdvzh .bgdvzh-warnings { background: #fffaeb; border-color: #b54708; color: #6b3000; }
+.bgdvzh .bgdvzh-notice { background: #eff4ff; border-color: #1a56db; color: #11306b; }
+.bgdvzh .bgdvzh-error-summary p, .bgdvzh .bgdvzh-warnings p, .bgdvzh .bgdvzh-notice p { margin: 0 0 .4em; }
+.bgdvzh .bgdvzh-error-summary ul, .bgdvzh .bgdvzh-warnings ul { margin: 0; padding-left: 1.2em; }
+
+/* Повторяющиеся строки */
+.bgdvzh .bgdvzh-repeater { margin: 0 0 1.2em; }
+.bgdvzh .bgdvzh-row {
+	margin: 0 0 1em;
+	padding: .8em 1em 1em;
+	border: 1px solid #d0d5dd;
+	border-radius: 8px;
+	min-width: 0;
+}
+.bgdvzh .bgdvzh-row > legend { font-weight: 700; padding: 0 .4em; }
+
+/* Кнопки */
+.bgdvzh .bgdvzh-btn {
+	display: inline-flex;
+	align-items: center;
+	justify-content: center;
+	min-height: 44px;
+	min-width: 44px;
+	padding: .55em 1.2em;
+	font: inherit;
+	font-weight: 600;
+	line-height: 1.2;
+	color: #fff;
+	background: #1a56db;
+	border: 2px solid #1a56db;
+	border-radius: 6px;
+	cursor: pointer;
+	text-decoration: none;
+}
+.bgdvzh .bgdvzh-btn:hover { background: #1647b8; border-color: #1647b8; }
+.bgdvzh .bgdvzh-btn-secondary { color: #1a56db; background: #fff; }
+.bgdvzh .bgdvzh-btn-secondary:hover { color: #fff; }
+.bgdvzh .bgdvzh-btn-small { min-height: 44px; padding: .4em .9em; }
+.bgdvzh .bgdvzh-btn[disabled] { opacity: .55; cursor: not-allowed; }
+.bgdvzh .bgdvzh-nav, .bgdvzh .bgdvzh-actions {
+	display: flex;
+	flex-wrap: wrap;
+	align-items: center;
+	gap: .75em;
+	margin: 1.2em 0 0;
+}
+.bgdvzh .bgdvzh-nav .bgdvzh-btn { flex: 1 1 auto; }
+.bgdvzh .bgdvzh-saved { flex: 1 0 100%; font-size: .85em; color: #4b5563; min-height: 1.2em; }
+
+/* Сводка */
+.bgdvzh .bgdvzh-group { margin: 0 0 1em; padding: .6em 1em .8em; border: 1px solid #d0d5dd; border-radius: 8px; }
+.bgdvzh .bgdvzh-group-head { display: flex; flex-wrap: wrap; align-items: center; justify-content: space-between; gap: .5em; }
+.bgdvzh .bgdvzh-group-head .bgdvzh-subheading { margin: .4em 0; }
+.bgdvzh .bgdvzh-dl { margin: 0; }
+.bgdvzh .bgdvzh-dl dt { font-weight: 600; margin-top: .6em; }
+.bgdvzh .bgdvzh-dl dd { margin: 0; overflow-wrap: anywhere; }
+.bgdvzh .bgdvzh-privacy { font-size: .92em; color: #374151; }
+
+/* Результат */
+.bgdvzh .bgdvzh-badge {
+	display: inline-flex;
+	align-items: center;
+	gap: .6em;
+	margin: 0 0 .8em;
+	padding: .55em 1em;
+	font-weight: 700;
+	border-radius: 6px;
+	border: 2px solid;
+}
+.bgdvzh .bgdvzh-badge-icon {
+	display: inline-flex;
+	align-items: center;
+	justify-content: center;
+	width: 1.6em;
+	height: 1.6em;
+	border-radius: 50%;
+	color: #fff;
+	font-size: .95em;
+}
+.bgdvzh .bgdvzh-badge-ok { background: #ecfdf3; border-color: #05603a; color: #05603a; }
+.bgdvzh .bgdvzh-badge-ok .bgdvzh-badge-icon { background: #05603a; }
+.bgdvzh .bgdvzh-badge-check { background: #fffaeb; border-color: #8a4b00; color: #6b3a00; }
+.bgdvzh .bgdvzh-badge-check .bgdvzh-badge-icon { background: #8a4b00; }
+.bgdvzh .bgdvzh-badge-obstacle { background: #fef3f2; border-color: #b42318; color: #912018; }
+.bgdvzh .bgdvzh-badge-obstacle .bgdvzh-badge-icon { background: #b42318; }
+.bgdvzh .bgdvzh-reasons { margin: 0 0 1em; padding-left: 1.3em; }
+.bgdvzh .bgdvzh-meta { color: #4b5563; font-size: .92em; margin-bottom: .3em; }
+.bgdvzh .bgdvzh-disclaimer { font-size: .9em; color: #4b5563; border-left: 4px solid #d0d5dd; padding-left: .8em; margin: 1em 0; }
+.bgdvzh .bgdvzh-offer, .bgdvzh .bgdvzh-pending, .bgdvzh .bgdvzh-paid {
+	margin: 1.2em 0;
+	padding: 1em;
+	border: 2px solid #1a56db;
+	border-radius: 8px;
+	background: #f8faff;
+}
+.bgdvzh .bgdvzh-offer .bgdvzh-subheading { margin-top: 0; }
+.bgdvzh .bgdvzh-price { font-size: 1.15em; }
+.bgdvzh .bgdvzh-caveat { font-weight: 600; }
+.bgdvzh .bgdvzh-paid { background: #fff; }
+.bgdvzh .bgdvzh-spinner {
+	display: inline-block;
+	width: 1em;
+	height: 1em;
+	margin-right: .6em;
+	vertical-align: -.15em;
+	border: 3px solid #c7d7fe;
+	border-top-color: #1a56db;
+	border-radius: 50%;
+	animation: bgdvzh-spin .9s linear infinite;
+}
+@keyframes bgdvzh-spin { to { transform: rotate(360deg); } }
+@media (prefers-reduced-motion: reduce) {
+	.bgdvzh .bgdvzh-spinner { animation: none; }
+}
+
+/* Список прежних результатов */
+.bgdvzh .bgdvzh-snaps { list-style: none; margin: 0 0 1em; padding: 0; }
+.bgdvzh .bgdvzh-snap {
+	display: flex;
+	flex-wrap: wrap;
+	align-items: center;
+	justify-content: space-between;
+	gap: .6em;
+	margin: 0 0 .6em;
+	padding: .7em 1em;
+	border: 1px solid #d0d5dd;
+	border-radius: 8px;
+}
+.bgdvzh .bgdvzh-snap-info { display: flex; flex-direction: column; gap: .15em; }
+.bgdvzh .bgdvzh-snap-status { font-weight: 700; }
+.bgdvzh .bgdvzh-snap-ok { color: #05603a; }
+.bgdvzh .bgdvzh-snap-check { color: #6b3a00; }
+.bgdvzh .bgdvzh-snap-obstacle { color: #912018; }
+.bgdvzh .bgdvzh-snap-date, .bgdvzh .bgdvzh-snap-paid { font-size: .9em; color: #4b5563; }
+
+/* Инструкция (HTML с сервера) */
+.bgdvzh .bgdvzh-doc { overflow-wrap: anywhere; }
+.bgdvzh .bgdvzh-doc h1, .bgdvzh .bgdvzh-doc h2, .bgdvzh .bgdvzh-doc h3, .bgdvzh .bgdvzh-doc h4 {
+	font: inherit;
+	font-weight: 700;
+	line-height: 1.3;
+	margin: 1.3em 0 .5em;
+}
+.bgdvzh .bgdvzh-doc h1 { font-size: 1.4em; margin-top: 0; }
+.bgdvzh .bgdvzh-doc h2 { font-size: 1.25em; }
+.bgdvzh .bgdvzh-doc h3 { font-size: 1.1em; }
+.bgdvzh .bgdvzh-doc p { margin: 0 0 .8em; }
+.bgdvzh .bgdvzh-doc ul, .bgdvzh .bgdvzh-doc ol { margin: 0 0 .9em; padding-left: 1.4em; }
+.bgdvzh .bgdvzh-doc li { margin-bottom: .3em; }
+.bgdvzh .bgdvzh-doc a { text-decoration: underline; }
+.bgdvzh .bgdvzh-section { margin: 0 0 1.4em; }
+.bgdvzh .bgdvzh-note {
+	margin: 0 0 1em;
+	padding: .7em 1em;
+	background: #fffaeb;
+	border-left: 4px solid #b54708;
+	border-radius: 4px;
+}
+.bgdvzh .bgdvzh-links { list-style: none; padding-left: 0; }
+.bgdvzh .bgdvzh-table-wrap { overflow-x: auto; margin: 0 0 1em; -webkit-overflow-scrolling: touch; }
+.bgdvzh .bgdvzh-doc table { border-collapse: collapse; width: 100%; min-width: 480px; }
+.bgdvzh .bgdvzh-doc th, .bgdvzh .bgdvzh-doc td {
+	border: 1px solid #d0d5dd;
+	padding: .45em .6em;
+	text-align: left;
+	vertical-align: top;
+	/* Не рвать слова посимвольно: широкая таблица прокручивается в .bgdvzh-table-wrap. */
+	overflow-wrap: break-word;
+	word-break: normal;
+}
+.bgdvzh .bgdvzh-doc th { background: #f2f4f7; font-weight: 700; }
+
+@media (min-width: 600px) {
+	.bgdvzh .bgdvzh-nav .bgdvzh-btn { flex: 0 0 auto; }
+	.bgdvzh .bgdvzh-saved { flex: 0 1 auto; margin-left: auto; }
+}

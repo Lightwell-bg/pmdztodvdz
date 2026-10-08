@@ -1,0 +1,11 @@
+{
+    "name": "bginfo/pmzh-dvzh-pdf-deps",
+    "description": "Build-time deps for bginfo-pmzh-dvzh (PDF generation). Namespaces are prefixed with PHP-Scoper (Strauss is broken on Windows).",
+    "require": {
+        "dompdf/dompdf": "^3.1"
+    },
+    "config": {
+        "platform": { "php": "8.1.0" },
+        "optimize-autoloader": true
+    }
+}

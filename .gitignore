@@ -1,0 +1,11 @@
+.env
+.tools/
+dist/
+vendor/
+node_modules/
+.idea/
+.vscode/
+*.bkp
+.$*
+.phpunit.result.cache
+.phpunit.cache/
